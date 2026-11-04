@@ -1,65 +1,83 @@
-"""Generic random placement for a grid.
+"""Seeded random noise for deciding where things go on a grid.
 
-The grid is a 2D list (grid[row][col]). Empty cells are None by default.
-`place_random` drops "things" into random cells. What a thing is depends
-on what you plug in: a plain value, an object, or a factory function.
+This module doesn't create or change the grid. It only gives a number
+from 0 to 1 for any (x, y) cell. Whoever builds the grid uses those
+numbers to decide what goes where, for example:
 
-Example:
-    grid = [[None] * 10 for _ in range(10)]
-    place_random(grid, "OBSTACLE", count=15)
-    place_random(grid, lambda r, c: Fire(r, c), density=0.05)
-    place_random(grid, "RESOURCE", count=3, seed=42)
+    for x in range(width):
+        for y in range(height):
+            if noise(x, y, seed=1) > 0.75:
+                ...  # put an obstacle here
+
+    fire_map = noise_map(width, height, seed=2, scale=4)
+
+The same (x, y, seed) always gives the same value, so a map can be
+recreated from its seed. Use a different seed for each kind of thing
+(fires, obstacles, resources) so they don't line up.
 """
 
-import random
+import math
 
 
-def place_random(grid, item, count=None, density=None,
-                 can_place=None, rng=None, seed=None):
-    """Place `item` into randomly chosen cells of `grid`.
+def _hash(ix, iy, seed):
+    """Deterministic pseudo-random value in [0, 1) for an integer point."""
+    h = (ix * 374761393 + iy * 668265263 + seed * 2246822519) & 0xFFFFFFFF
+    h = ((h ^ (h >> 13)) * 1274126177) & 0xFFFFFFFF
+    h ^= h >> 16
+    return h / 4294967296.0
+
+
+def _smooth(t):
+    """Smoothstep curve, so values blend without hard edges."""
+    return t * t * (3 - 2 * t)
+
+
+def _value_noise(x, y, seed):
+    """Smooth noise from blending random values at the four corners."""
+    x0, y0 = math.floor(x), math.floor(y)
+    tx, ty = _smooth(x - x0), _smooth(y - y0)
+
+    a = _hash(x0, y0, seed)
+    b = _hash(x0 + 1, y0, seed)
+    c = _hash(x0, y0 + 1, seed)
+    d = _hash(x0 + 1, y0 + 1, seed)
+
+    top = a + (b - a) * tx
+    bottom = c + (d - c) * tx
+    return top + (bottom - top) * ty
+
+
+def noise(x, y, seed=0, scale=1.0, octaves=1):
+    """Return a random value from 0 to 1 for cell (x, y).
 
     Args:
-        grid: 2D list, modified in place.
-        item: What to place. A callable is invoked as item(row, col)
-            for each cell, so every placement can be a new object.
-            Anything else is placed as-is.
-        count: Exact number of cells to fill.
-        density: Fraction (0-1) of eligible cells to fill. Use either
-            count or density, not both.
-        can_place: Optional function (grid, row, col) -> bool that says
-            whether a cell is eligible. The default only allows cells
-            that are None.
-        rng: Optional random.Random instance to use.
-        seed: Optional seed, used only if rng is not given, so results
-            are reproducible.
-
-    Returns:
-        A list of (row, col) positions that were filled.
-        If fewer cells are eligible than requested, it fills all of them.
+        x, y: Cell coordinates (ints or floats).
+        seed: Change this to get a completely different pattern.
+        scale: Size of the "blobs" in cells. With 1 (the default), every
+            cell is independent, like pure random noise. With larger
+            values (like 4 or 8), nearby cells get similar values, so
+            things cluster, e.g. a patch of fires or a stretch of terrain.
+        octaves: Number of noise layers stacked together. More layers add
+            finer detail on top of the big blobs. 1 is fine for most uses.
     """
-    if (count is None) == (density is None):
-        raise ValueError("Pass exactly one of count or density")
-    if density is not None and not 0 <= density <= 1:
-        raise ValueError("density must be between 0 and 1")
-    if count is not None and count < 0:
-        raise ValueError("count must be >= 0")
+    if scale <= 0:
+        raise ValueError("scale must be > 0")
+    if octaves < 1:
+        raise ValueError("octaves must be >= 1")
 
-    if rng is None:
-        rng = random.Random(seed)
-    if can_place is None:
-        can_place = lambda g, r, c: g[r][c] is None
+    if scale == 1 and octaves == 1:
+        return _hash(int(x), int(y), seed)
 
-    candidates = [
-        (r, c)
-        for r in range(len(grid))
-        for c in range(len(grid[r]))
-        if can_place(grid, r, c)
-    ]
+    total, amplitude, frequency, max_total = 0.0, 1.0, 1.0 / scale, 0.0
+    for i in range(octaves):
+        total += amplitude * _value_noise(x * frequency, y * frequency, seed + i)
+        max_total += amplitude
+        amplitude *= 0.5
+        frequency *= 2
+    return total / max_total
 
-    n = count if count is not None else round(len(candidates) * density)
-    n = min(n, len(candidates))
 
-    chosen = rng.sample(candidates, n)
-    for r, c in chosen:
-        grid[r][c] = item(r, c) if callable(item) else item
-    return chosen
+def noise_map(width, height, seed=0, scale=1.0, octaves=1):
+    """Return a height x width list of noise values (map[y][x])."""
+    return [[noise(x, y, seed, scale, octaves) for x in range(width)]
+            for y in range(height)]
