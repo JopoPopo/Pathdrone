@@ -1,0 +1,9 @@
+# / means a folder (ignores any folder wit that name)
+# * will ignore every file ending in the following
+
+#python generated files: 
+__pycache__/
+*.pyc
+
+#Settings
+.vscode/
