@@ -7,3 +7,11 @@ __pycache__/
 
 #Settings
 .vscode/
+
+# Added: virtual environments, secrets, editor/OS files
+venv/
+.venv/
+.env
+.idea/
+.DS_Store
+Thumbs.db
