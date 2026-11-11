@@ -4,14 +4,16 @@ from sys import exit
 from map_Classes import Tile
 from map_Classes import Terrain
 
+map_row = 4
+map_col = 9
+TILE_SIZE = 50
+
 pygame.init()
-screen = pygame.display.set_mode((500,400))
+screen = pygame.display.set_mode((TILE_SIZE * map_col,TILE_SIZE * map_row))
 pygame.display.set_caption('Map Gen')
 clock = pygame.time.Clock()
 
-tile_Surface = pygame.Surface((100,100))
-
-
+tile_Surface = pygame.Surface((TILE_SIZE,TILE_SIZE))
 
 
 tile_Colors = {
@@ -23,18 +25,15 @@ tile_Colors = {
 
 }
 
-tile_Map = [[0,0,0,0,0],
-            [0,0,0,0,0],
-            [0,0,0,0,0],
-            [0,0,0,0,0],]
+tile_Map = [[0 for _ in range(map_col)]for _ in range(map_row)]
 
 for row in range(len(tile_Map)):
     for item in range (len(tile_Map[row])):
         tile_Map[row][item] = Tile(Terrain(random.randint(0,len(Terrain)-1)), row, item, random.randint(0,1), random.randint(0,1))
 
 def draw_tile(tile):
-    draw_x = tile.col * 100
-    draw_y = tile.row * 100
+    draw_x = tile.col * TILE_SIZE
+    draw_y = tile.row * TILE_SIZE
 
     tile_Surface.fill(tile_Colors[tile.terrain])
     screen.blit(tile_Surface,(draw_x,draw_y))
