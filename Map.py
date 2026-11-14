@@ -6,6 +6,8 @@ from map_Classes import Terrain
 from map_Classes import Fire
 from map_Classes import Drone
 from random_gen import noise_map
+from pathfinding import path_to_nearest_fire
+from resources import place_resources
 
 MAP_ROWS = 20
 MAP_COLS = 40
@@ -43,7 +45,9 @@ tile_Map = [
      for col in range(MAP_COLS)]
     for row in range(MAP_ROWS)
 ]
+resources = place_resources(tile_Map)
 fire = Fire()
+fire.spawn_random_source(tile_Map)   # start with one fire so the drone has a target right away
 drone_tile = random.choice([tile for row in tile_Map for tile in row if not tile.fireState])
 drone = Drone(drone_tile)
 
@@ -55,11 +59,18 @@ def draw_tile(y, x, tile):
     tile_Surface.fill(tile_Colors[tile.terrain])
     screen.blit(tile_Surface,(draw_x,draw_y))
 
+    if tile.resource:
+        center = (draw_x + TILE_SIZE // 2, draw_y + TILE_SIZE // 2)
+        pygame.draw.circle(screen, (255, 255, 255), center, TILE_SIZE // 4)
+        pygame.draw.circle(screen, (0, 0, 0), center, TILE_SIZE // 4, 2)
+
     if tile.fireState:
-        fire_emoji = fire_font.render("\U0001F525", True, (255, 100, 20))
-        screen.blit(
-            fire_emoji,
-            fire_emoji.get_rect(center=(draw_x + TILE_SIZE // 2, draw_y + TILE_SIZE // 2)),
+        # A plain square works on every OS; the fire emoji font only exists on Windows.
+        inset = TILE_SIZE // 8
+        pygame.draw.rect(
+            screen,
+            (255, 69, 0),
+            (draw_x + inset, draw_y + inset, TILE_SIZE - 2 * inset, TILE_SIZE - 2 * inset),
         )
 
 
@@ -86,6 +97,35 @@ def draw_drone(drone):
     pygame.draw.circle(screen, color, (center_x, center_y), body_radius)
 
 
+def draw_path(path):
+    if len(path) < 2:
+        return
+    half = TILE_SIZE // 2
+    points = [(col * TILE_SIZE + half, row * TILE_SIZE + half) for row, col in path]
+    pygame.draw.lines(screen, (255, 255, 255), False, points, 2)
+
+
+def move_drone(drone):
+    """Move one tile toward the nearest fire and put it out on arrival.
+
+    The path is recalculated every step, since fires spread and new ones
+    appear. Returns the path still ahead, for drawing.
+    """
+    path = path_to_nearest_fire(tile_Map, (drone.row, drone.col), fire)
+    if path is None:
+        return []
+    if len(path) > 1:
+        drone.row, drone.col = path[1]
+    tile = tile_Map[drone.row][drone.col]
+    if tile.fireState:
+        fire.extinguish(tile)
+    return path[1:]
+
+
+drone_path = []
+drone_move_timer = 0
+DRONE_MOVE_INTERVAL = 250   # ms per tile
+
 fire_spawn_timer = 0
 fire_spread_timer = 0
 fire_spread_interval = random.randint(5000, 10000)
@@ -107,6 +147,11 @@ while True:
     else:
         fire_spread_timer = 0
 
+    drone_move_timer += delta_time
+    if drone_move_timer >= DRONE_MOVE_INTERVAL:
+        drone_move_timer -= DRONE_MOVE_INTERVAL
+        drone_path = move_drone(drone)
+
     for event in pygame.event.get():
         if event.type == pygame.QUIT:
             pygame.quit()
@@ -115,5 +160,6 @@ while True:
     for y, row in enumerate(tile_Map):
         for x, item in enumerate(row):
             draw_tile(y, x, item)
+    draw_path(drone_path)
     draw_drone(drone)
     pygame.display.update()
