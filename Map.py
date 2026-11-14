@@ -3,9 +3,10 @@ import random
 from sys import exit
 from map_Classes import Tile
 from map_Classes import Terrain
+from random_gen import noise_map
 
-map_row = 4
-map_col = 9
+map_row = 20
+map_col = 40
 TILE_SIZE = 50
 
 pygame.init()
@@ -16,6 +17,18 @@ clock = pygame.time.Clock()
 tile_Surface = pygame.Surface((TILE_SIZE,TILE_SIZE))
 
 
+
+def tile_decider(x,y,noise_Map):
+
+    noise = noise_Map[x][y]
+    if noise < .5:
+        return 0
+    elif noise < .8:
+        return 1
+    elif noise < 1:
+        return 2
+
+
 tile_Colors = {
 
     Terrain.GRASS: (124, 252, 0),
@@ -24,16 +37,16 @@ tile_Colors = {
     Terrain.ASH: (178, 190, 181),
 
 }
+noise_Map = noise_map(map_col, map_row,8,8,3)
 
-tile_Map = [[0 for _ in range(map_col)]for _ in range(map_row)]
+tile_Map = [
+    [Tile(Terrain(tile_decider(x,y,noise_Map)),x,y,0,0) for y in range(len(noise_Map[x]))]for x in range(len(noise_Map))
+]
 
-for row in range(len(tile_Map)):
-    for item in range (len(tile_Map[row])):
-        tile_Map[row][item] = Tile(Terrain(random.randint(0,len(Terrain)-1)), row, item, random.randint(0,1), random.randint(0,1))
 
-def draw_tile(tile):
-    draw_x = tile.col * TILE_SIZE
-    draw_y = tile.row * TILE_SIZE
+def draw_tile(y, x, tile):
+    draw_x = x * TILE_SIZE
+    draw_y = y * TILE_SIZE
 
     tile_Surface.fill(tile_Colors[tile.terrain])
     screen.blit(tile_Surface,(draw_x,draw_y))
@@ -48,9 +61,9 @@ while True:
             pygame.quit()
             exit()
 
-    for row in tile_Map:
-        for item in row:
-            draw_tile(item)
+    for y, row in enumerate(tile_Map):
+        for x, item in enumerate(row):
+            draw_tile(y, x, item)
     
     
     
