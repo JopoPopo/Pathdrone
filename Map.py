@@ -1,4 +1,5 @@
 import pygame
+import math
 import random
 from sys import exit
 from map_Classes import Tile
@@ -7,7 +8,7 @@ from map_Classes import Fire
 from map_Classes import Drone
 from random_gen import noise_map
 from pathfinding import bfs_path
-from resources import place_resources
+from resources import place_resources, RESOURCE_SEED
 
 MAP_ROWS = 20
 MAP_COLS = 40
@@ -15,18 +16,19 @@ TILE_SIZE = 25
 
 MAP_WIDTH = MAP_COLS * TILE_SIZE
 MAP_HEIGHT = MAP_ROWS * TILE_SIZE
-LEGEND_WIDTH = 240
+LEGEND_WIDTH = 320
+STATUS_HEIGHT = 130
 
 WINDOW_WIDTH = MAP_WIDTH + LEGEND_WIDTH
-WINDOW_HEIGHT = MAP_HEIGHT
+WINDOW_HEIGHT = MAP_HEIGHT + STATUS_HEIGHT
 
 pygame.init()
 screen = pygame.display.set_mode((WINDOW_WIDTH, WINDOW_HEIGHT))
 pygame.display.set_caption('Map Gen')
 clock = pygame.time.Clock()
-fire_font = pygame.font.SysFont("Segoe UI Emoji", TILE_SIZE)
-legend_title_font = pygame.font.SysFont("Arial", 28, bold=True)
-legend_item_font = pygame.font.SysFont("Arial", 20)
+legend_title_font = pygame.font.SysFont("Arial", 24, bold=True)
+legend_head_font = pygame.font.SysFont("Arial", 14, bold=True)
+legend_item_font = pygame.font.SysFont("Arial", 16)
 
 tile_Surface = pygame.Surface((TILE_SIZE,TILE_SIZE))
 
@@ -36,8 +38,7 @@ def tile_decider(x,y,noise_Map):
         return 0
     elif noise < .8:
         return 1
-    elif noise < 1:
-        return 2
+    return 2
 
 tile_Colors = {
 
@@ -56,20 +57,182 @@ LEGEND_ITEMS = (
 
 LEGEND_BACKGROUND = (35, 38, 45)
 LEGEND_BORDER = (160, 165, 175)
+LEGEND_TEXT = (240, 240, 240)
+LEGEND_DIM = (150, 155, 165)
+LEGEND_HIGHLIGHT = (255, 205, 80)
 DRONE_COLOR = (20, 45, 190)
+FIRE_COLOR = (255, 69, 0)
 
-noise_Map = noise_map(MAP_COLS, MAP_ROWS, 8, 8, 3)
-
-tile_Map = [
-    [Tile(Terrain(tile_decider(row, col, noise_Map)), row, col, 0, 0)
-     for col in range(MAP_COLS)]
-    for row in range(MAP_ROWS)
+# --- customization settings -------------------------------------------------
+# "regen" settings only take effect when the map is rebuilt (G); the rest are
+# read by the simulation every frame, so they apply straight away.
+SETTINGS = [
+    {"key": "seed",      "label": "Terrain seed",  "value": 8,  "min": 0, "max": 9999, "step": 1, "regen": True},
+    {"key": "scale",     "label": "Terrain scale", "value": 8,  "min": 1, "max": 32,   "step": 1, "regen": True},
+    {"key": "octaves",   "label": "Terrain detail","value": 3,  "min": 1, "max": 6,    "step": 1, "regen": True},
+    {"key": "resources", "label": "Resources",     "value": 3,  "min": 0, "max": 25,   "step": 1, "regen": True, "suffix": "%"},
+    {"key": "tank",      "label": "Drone tank",    "value": 1,  "min": 1, "max": 10,   "step": 1, "regen": True},
+    {"key": "fire_rate", "label": "Fire rate",     "value": 25, "min": 0, "max": 100,  "step": 5, "regen": False, "suffix": "%"},
 ]
-resources = place_resources(tile_Map)
-fire = Fire()
-fire.spawn_random_source(tile_Map)   # start with one fire so the drone has a target right away
-drone_tile = random.choice([tile for row in tile_Map for tile in row if not tile.fireState])
-drone = Drone(drone_tile)
+SETTINGS_BY_KEY = {entry["key"]: entry for entry in SETTINGS}
+setting_index = 0
+
+
+def setting(key):
+    return SETTINGS_BY_KEY[key]["value"]
+
+
+def adjust_setting(index, direction):
+    """Nudge one setting by its step, clamped to its range."""
+    global world_dirty
+    entry = SETTINGS[index]
+    new_value = min(entry["max"], max(entry["min"], entry["value"] + direction * entry["step"]))
+    if new_value == entry["value"]:
+        return
+    entry["value"] = new_value
+    if entry["regen"]:
+        world_dirty = True
+
+
+# --- paint brushes ----------------------------------------------------------
+# (label, kind, payload); picked with keys 1-8 and applied by clicking a tile.
+BRUSHES = (
+    ("Grass",    "terrain",  Terrain.GRASS),
+    ("Water",    "terrain",  Terrain.WATER),
+    ("Gravel",   "terrain",  Terrain.GRAVEL),
+    ("Ash",      "terrain",  Terrain.ASH),
+    ("Fire",     "fire",     None),
+    ("Resource", "resource", None),
+    ("Erase",    "erase",    None),
+    ("Move drone", "drone",  None),
+)
+brush_index = 0
+ERASE_BRUSH = next(i for i, brush in enumerate(BRUSHES) if brush[1] == "erase")
+painting = False
+paint_button = 1
+
+world_dirty = False
+options_open = False
+brush_open = False
+
+
+def draw_gear(center, radius, color):
+    """A gear glyph: a toothed ring with a hole in the middle."""
+    teeth = 8
+    for index in range(teeth):
+        angle = index * math.tau / teeth
+        inner = (center[0] + math.cos(angle) * radius * 0.62,
+                 center[1] + math.sin(angle) * radius * 0.62)
+        outer = (center[0] + math.cos(angle) * radius * 1.15,
+                 center[1] + math.sin(angle) * radius * 1.15)
+        pygame.draw.line(screen, color, inner, outer, 4)
+    pygame.draw.circle(screen, color, center, int(radius * 0.8), 3)
+    pygame.draw.circle(screen, color, center, int(radius * 0.3), 2)
+
+
+# Both pickers live behind a button in the legend; neither is shown by default.
+GEAR_HITBOX = pygame.Rect(MAP_WIDTH + 20, 48, LEGEND_WIDTH - 40, 36)
+GEAR_CENTER = (GEAR_HITBOX.left + 24, GEAR_HITBOX.centery)
+GEAR_RADIUS = 11
+BRUSH_HITBOX = pygame.Rect(MAP_WIDTH + 20, 92, LEGEND_WIDTH - 40, 36)
+
+# Each panel floats over the middle of the map.
+OPTIONS_ROW_HEIGHT = 34
+OPTIONS_RECT = pygame.Rect(0, 0, 440, 108 + len(SETTINGS) * OPTIONS_ROW_HEIGHT)
+OPTIONS_RECT.center = (MAP_WIDTH // 2, MAP_HEIGHT // 2)
+
+BRUSH_ROW_HEIGHT = 32
+BRUSH_RECT = pygame.Rect(0, 0, 320, 96 + len(BRUSHES) * BRUSH_ROW_HEIGHT)
+BRUSH_RECT.center = (MAP_WIDTH // 2, MAP_HEIGHT // 2)
+
+
+def options_row_rects():
+    """Per-setting (row, minus, plus) rects, shared by drawing and hit tests."""
+    rects = []
+    for index in range(len(SETTINGS)):
+        top = OPTIONS_RECT.top + 62 + index * OPTIONS_ROW_HEIGHT
+        row = pygame.Rect(OPTIONS_RECT.left + 16, top, OPTIONS_RECT.width - 32, 26)
+        minus = pygame.Rect(row.right - 108, top, 26, 26)
+        plus = pygame.Rect(row.right - 26, top, 26, 26)
+        rects.append((row, minus, plus))
+    return rects
+
+
+def brush_row_rects():
+    """Per-brush row rects, shared by drawing and hit tests."""
+    return [
+        pygame.Rect(BRUSH_RECT.left + 16, BRUSH_RECT.top + 56 + index * BRUSH_ROW_HEIGHT,
+                    BRUSH_RECT.width - 32, 26)
+        for index in range(len(BRUSHES))
+    ]
+
+
+def build_world():
+    """Create a fresh map, resources, fire and drone from the current settings."""
+    global tile_Map, resources, fire, drone, drone_path, drone_mode, world_dirty
+    global drone_move_timer, fire_spawn_timer, fire_spread_timer, fire_spread_interval
+
+    noise_Map = noise_map(MAP_COLS, MAP_ROWS, setting("seed"), setting("scale"), setting("octaves"))
+    tile_Map = [
+        [Tile(Terrain(tile_decider(row, col, noise_Map)), row, col, 0, 0)
+         for col in range(MAP_COLS)]
+        for row in range(MAP_ROWS)
+    ]
+    # Offset the resource seed by the terrain seed so a new seed moves both.
+    resources = place_resources(
+        tile_Map,
+        seed=RESOURCE_SEED + setting("seed"),
+        threshold=1 - setting("resources") / 100,
+    )
+    fire = Fire()
+    fire.spawn_random_source(tile_Map)   # start with one fire so the drone has a target right away
+    open_tiles = [tile for row in tile_Map for tile in row if not tile.fireState]
+    drone = Drone(random.choice(open_tiles or [tile_Map[0][0]]), max_water=setting("tank"))
+
+    drone_path, drone_mode = [], "fire"
+    drone_move_timer = 0
+    fire_spawn_timer = 0
+    fire_spread_timer = 0
+    fire_spread_interval = random.randint(5000, 10000)
+    world_dirty = False
+
+
+def clear_resource(tile):
+    tile.resource = False
+    if tile in resources:
+        resources.remove(tile)
+
+
+def paint_tile(tile, index=None):
+    """Apply a brush to one tile, defaulting to the selected one."""
+    label, kind, payload = BRUSHES[brush_index if index is None else index]
+
+    if kind == "terrain":
+        tile.terrain = payload
+        if payload == Terrain.WATER:
+            # Water can't burn and can't hold a resource point.
+            fire.extinguish(tile)
+            clear_resource(tile)
+    elif kind == "fire":
+        if tile.terrain != Terrain.WATER and not tile.fireState:
+            fire.ignite(tile)
+    elif kind == "resource":
+        if tile.terrain != Terrain.WATER and not tile.resource:
+            tile.resource = True
+            resources.append(tile)
+    elif kind == "erase":
+        fire.extinguish(tile)
+        clear_resource(tile)
+    elif kind == "drone":
+        drone.row, drone.col = tile.row, tile.col
+
+
+def tile_at(pos):
+    """The tile under a screen position, or None if the click missed the map."""
+    x, y = pos
+    if not (0 <= x < MAP_WIDTH and 0 <= y < MAP_HEIGHT):
+        return None
+    return tile_Map[y // TILE_SIZE][x // TILE_SIZE]
 
 
 def draw_tile(y, x, tile):
@@ -89,7 +252,7 @@ def draw_tile(y, x, tile):
         inset = TILE_SIZE // 8
         pygame.draw.rect(
             screen,
-            (255, 69, 0),
+            FIRE_COLOR,
             (draw_x + inset, draw_y + inset, TILE_SIZE - 2 * inset, TILE_SIZE - 2 * inset),
         )
 
@@ -97,11 +260,16 @@ def draw_tile(y, x, tile):
 def draw_drone(drone):
     center_x = drone.col * TILE_SIZE + TILE_SIZE // 2
     center_y = drone.row * TILE_SIZE + TILE_SIZE // 2
+    draw_drone_glyph(center_x, center_y, TILE_SIZE)
+
+
+def draw_drone_glyph(center_x, center_y, size):
+    """The drone symbol, sized to fit a `size` box, for the map and the legend."""
     color = DRONE_COLOR
-    rotor_offset = TILE_SIZE * 18 // 50
-    rotor_radius = max(2, TILE_SIZE * 6 // 50)
-    body_radius = max(2, TILE_SIZE * 7 // 50)
-    line_width = max(1, TILE_SIZE * 4 // 50)
+    rotor_offset = size * 18 // 50
+    rotor_radius = max(2, size * 6 // 50)
+    body_radius = max(2, size * 7 // 50)
+    line_width = max(1, size * 4 // 50)
 
     for offset_x, offset_y in (
         (-rotor_offset, -rotor_offset),
@@ -126,6 +294,21 @@ def draw_path(path, mode):
     half = TILE_SIZE // 2
     points = [(col * TILE_SIZE + half, row * TILE_SIZE + half) for row, col in path]
     pygame.draw.lines(screen, PATH_COLORS[mode], False, points, 2)
+
+
+def draw_hover_highlight():
+    """Outline the tile the brush would land on."""
+    if options_open or brush_open:
+        return
+    tile = tile_at(pygame.mouse.get_pos())
+    if tile is None:
+        return
+    pygame.draw.rect(
+        screen,
+        LEGEND_HIGHLIGHT,
+        (tile.col * TILE_SIZE, tile.row * TILE_SIZE, TILE_SIZE, TILE_SIZE),
+        2,
+    )
 
 
 def choose_goals(drone):
@@ -163,140 +346,304 @@ def move_drone(drone):
     return path[1:], mode
 
 
-drone_path, drone_mode = [], "fire"
-drone_move_timer = 0
 DRONE_MOVE_INTERVAL = 250   # ms per tile
+paused = False
 
-fire_spawn_timer = 0
-fire_spread_timer = 0
-fire_spread_interval = random.randint(5000, 10000)
+
+def draw_brush_swatch(x, y, size, brush):
+    """A small preview of what a brush paints."""
+    label, kind, payload = brush
+    box = pygame.Rect(x, y, size, size)
+
+    if kind == "terrain":
+        pygame.draw.rect(screen, tile_Colors[payload], box)
+        pygame.draw.rect(screen, LEGEND_BORDER, box, 1)
+    elif kind == "fire":
+        inset = size // 8
+        pygame.draw.rect(screen, FIRE_COLOR, box.inflate(-2 * inset, -2 * inset))
+    elif kind == "resource":
+        pygame.draw.circle(screen, (255, 255, 255), box.center, size // 4)
+        pygame.draw.circle(screen, (0, 0, 0), box.center, size // 4, 2)
+    elif kind == "erase":
+        pygame.draw.rect(screen, LEGEND_BORDER, box, 1)
+        pygame.draw.line(screen, LEGEND_BORDER, box.topleft, box.bottomright, 2)
+        pygame.draw.line(screen, LEGEND_BORDER, box.topright, box.bottomleft, 2)
+    elif kind == "drone":
+        draw_drone_glyph(box.centerx, box.centery, size * 2)
+
 
 def draw_legend_panel():
-    legend_rect = pygame.Rect(
-        MAP_WIDTH,
-        0,
-        LEGEND_WIDTH,
-        WINDOW_HEIGHT
-    )
-
+    legend_rect = pygame.Rect(MAP_WIDTH, 0, LEGEND_WIDTH, WINDOW_HEIGHT)
     pygame.draw.rect(screen, LEGEND_BACKGROUND, legend_rect)
-
-    pygame.draw.line(
-        screen,
-        LEGEND_BORDER,
-        (MAP_WIDTH, 0),
-        (MAP_WIDTH, WINDOW_HEIGHT),
-        2
-    )
-
+    pygame.draw.line(screen, LEGEND_BORDER, (MAP_WIDTH, 0), (MAP_WIDTH, WINDOW_HEIGHT), 2)
 
     item_x = MAP_WIDTH + 20
-    item_start_y = 75
+    text_x = item_x + 32
     box_size = 20
-    row_spacing = 35
 
-    symbol_start_y = item_start_y + len(LEGEND_ITEMS) * row_spacing + 10
+    screen.blit(legend_title_font.render("LEGEND", True, LEGEND_TEXT), (item_x, 12))
 
-    for index, (label, terrain) in enumerate(LEGEND_ITEMS):
-        item_y = item_start_y + index * row_spacing
+    mouse_pos = pygame.mouse.get_pos()
 
-        color_box = pygame.Rect(
-            item_x,
-            item_y,
-            box_size,
-            box_size
-        )
-
-        pygame.draw.rect(
-            screen,
-            tile_Colors[terrain],
-            color_box
-        )
-
-        pygame.draw.rect(
-            screen,
-            LEGEND_BORDER,
-            color_box,
-            1
-        )
-
-        drone_y = symbol_start_y + 40
-        drone_center = (
-            item_x + box_size // 2,
-            drone_y + box_size // 2
-        )
-
-        pygame.draw.circle(
-            screen,
-            DRONE_COLOR,
-            drone_center,
-            7
-        )
-
-        fire_symbol = fire_font.render(
-            "\U0001F525",
-            True,
-            (255, 100, 20)
-        )
-
-        title_surface = legend_title_font.render(
-            "LEGEND",
-            True,
-            (240, 240, 240)
-        )
-
+    # Options button.
+    gear_hot = options_open or GEAR_HITBOX.collidepoint(mouse_pos)
+    pygame.draw.rect(screen, (58, 52, 38) if gear_hot else (48, 52, 60), GEAR_HITBOX)
+    pygame.draw.rect(screen, LEGEND_HIGHLIGHT, GEAR_HITBOX, 2)
+    draw_gear(GEAR_CENTER, GEAR_RADIUS, LEGEND_HIGHLIGHT)
+    screen.blit(
+        legend_item_font.render("OPTIONS", True, LEGEND_HIGHLIGHT),
+        (GEAR_HITBOX.left + 44, GEAR_HITBOX.centery - 9),
+    )
+    if world_dirty:
+        # The settings are hidden, so say so here when a rebuild is pending.
+        pending = legend_head_font.render("rebuild pending", True, LEGEND_HIGHLIGHT)
         screen.blit(
-            title_surface,
-            (MAP_WIDTH + 20, 20)
+            pending,
+            (GEAR_HITBOX.right - pending.get_width() - 14, GEAR_HITBOX.centery - 7),
         )
 
-        item_surface = legend_item_font.render(
-            label,
-            True,
-            (240, 240, 240)
-        )
+    # Brush button, showing the brush currently selected.
+    brush_hot = brush_open or BRUSH_HITBOX.collidepoint(mouse_pos)
+    pygame.draw.rect(screen, (58, 52, 38) if brush_hot else (48, 52, 60), BRUSH_HITBOX)
+    pygame.draw.rect(screen, LEGEND_HIGHLIGHT, BRUSH_HITBOX, 2)
+    draw_brush_swatch(BRUSH_HITBOX.left + 13, BRUSH_HITBOX.centery - 10, 20, BRUSHES[brush_index])
+    screen.blit(
+        legend_item_font.render(f"BRUSH: {BRUSHES[brush_index][0]}", True, LEGEND_HIGHLIGHT),
+        (BRUSH_HITBOX.left + 44, BRUSH_HITBOX.centery - 9),
+    )
 
+    # Terrain, fire and drone keys.
+    screen.blit(legend_head_font.render("MAP", True, LEGEND_DIM), (item_x, 142))
+    y = 162
+    for label, terrain in LEGEND_ITEMS:
+        color_box = pygame.Rect(item_x, y, box_size, box_size)
+        pygame.draw.rect(screen, tile_Colors[terrain], color_box)
+        pygame.draw.rect(screen, LEGEND_BORDER, color_box, 1)
+        screen.blit(legend_item_font.render(label, True, LEGEND_TEXT), (text_x, y))
+        y += 26
+
+    inset = box_size // 8
+    pygame.draw.rect(
+        screen,
+        FIRE_COLOR,
+        (item_x + inset, y + inset, box_size - 2 * inset, box_size - 2 * inset),
+    )
+    screen.blit(legend_item_font.render("Active Fire", True, LEGEND_TEXT), (text_x, y))
+    y += 26
+
+    draw_drone_glyph(item_x + box_size // 2, y + box_size // 2, box_size * 2)
+    screen.blit(legend_item_font.render("Drone", True, LEGEND_TEXT), (text_x, y))
+
+
+def draw_panel_backdrop(rect, title):
+    """Dim the map and draw an empty titled panel. Shared by both pickers."""
+    shade = pygame.Surface((MAP_WIDTH, MAP_HEIGHT), pygame.SRCALPHA)
+    shade.fill((0, 0, 0, 140))
+    screen.blit(shade, (0, 0))
+
+    pygame.draw.rect(screen, LEGEND_BACKGROUND, rect)
+    pygame.draw.rect(screen, LEGEND_BORDER, rect, 2)
+    screen.blit(
+        legend_title_font.render(title, True, LEGEND_TEXT),
+        (rect.left + 16, rect.top + 12),
+    )
+
+
+def draw_brush_panel():
+    """The brush picker. Hidden until the BRUSH button is clicked."""
+    draw_panel_backdrop(BRUSH_RECT, "BRUSH")
+    mouse_pos = pygame.mouse.get_pos()
+
+    for index, (brush, row) in enumerate(zip(BRUSHES, brush_row_rects())):
+        selected = index == brush_index
+        hot = row.collidepoint(mouse_pos)
+        if selected or hot:
+            pygame.draw.rect(screen, (58, 52, 38) if hot else (55, 60, 70), row.inflate(8, 4))
+        draw_brush_swatch(row.left, row.top + 3, 20, brush)
+        color = LEGEND_HIGHLIGHT if selected else LEGEND_TEXT
         screen.blit(
-            item_surface,
-            (item_x + box_size + 12, item_y - 2)
+            legend_item_font.render(f"{index + 1}   {brush[0]}", True, color),
+            (row.left + 32, row.top + 3),
         )
 
+    screen.blit(
+        legend_head_font.render("click a brush, or press 1-8    B or ESC close", True, LEGEND_DIM),
+        (BRUSH_RECT.left + 16, BRUSH_RECT.bottom - 28),
+    )
+
+
+def draw_options_panel():
+    """The settings, as a panel over the map. Hidden until the gear is clicked."""
+    draw_panel_backdrop(OPTIONS_RECT, "OPTIONS")
+    draw_gear((OPTIONS_RECT.right - 32, OPTIONS_RECT.top + 26), 11, LEGEND_HIGHLIGHT)
+    mouse_pos = pygame.mouse.get_pos()
+    for index, (entry, (row, minus, plus)) in enumerate(zip(SETTINGS, options_row_rects())):
+        selected = index == setting_index
+        if selected:
+            pygame.draw.rect(screen, (55, 60, 70), row.inflate(8, 4))
+
+        color = LEGEND_HIGHLIGHT if selected else LEGEND_TEXT
+        screen.blit(legend_item_font.render(entry["label"], True, color), (row.left, row.top + 3))
+
+        value = f"{entry['value']}{entry.get('suffix', '')}"
+        value_surface = legend_item_font.render(value, True, color)
+        screen.blit(value_surface, (minus.right + 24 - value_surface.get_width() // 2, row.top + 3))
+
+        for button, glyph in ((minus, "-"), (plus, "+")):
+            hot = button.collidepoint(mouse_pos)
+            pygame.draw.rect(screen, LEGEND_HIGHLIGHT if hot else LEGEND_BORDER, button, 1)
+            glyph_surface = legend_item_font.render(glyph, True, LEGEND_HIGHLIGHT if hot else color)
+            screen.blit(glyph_surface, glyph_surface.get_rect(center=button.center))
+
+    hint_y = OPTIONS_RECT.bottom - 40
+    hints = (
+        "UP/DOWN select    LEFT/RIGHT change    N random seed",
+        "G rebuild map    TAB or ESC close",
+    )
+    for line in hints:
+        screen.blit(legend_head_font.render(line, True, LEGEND_DIM), (OPTIONS_RECT.left + 16, hint_y))
+        hint_y += 18
+
+    if world_dirty:
         screen.blit(
-            fire_symbol,
-            (item_x -2, symbol_start_y-4)
-        )
-
-        fire_label = legend_item_font.render(
-            "Active Fire",
-            True,
-            (240, 240, 240)
-        )
-
-        screen.blit(
-            fire_label,
-            (item_x + box_size + 12, symbol_start_y)
-        )
-
-        drone_label = legend_item_font.render(
-        "Drone",
-        True,
-        (240, 240, 240)
-        )
-
-        screen.blit(
-        drone_label,
-        (item_x + box_size + 12, drone_y)
+            legend_head_font.render("map rebuild pending - press G", True, LEGEND_HIGHLIGHT),
+            (OPTIONS_RECT.left + 16, OPTIONS_RECT.bottom - 60),
         )
 
 
+STATUS_LINES = (
+    "SPACE  pause / resume      .  step one drone move (paused)      ESC  quit",
+    "left-click  paint      right-click  erase      drag to paint      1-8  pick brush",
+    "BRUSH button or B  brushes      OPTIONS button or TAB  settings      G  rebuild      N  seed",
+)
 
+
+def draw_status_bar():
+    bar = pygame.Rect(0, MAP_HEIGHT, MAP_WIDTH, STATUS_HEIGHT)
+    pygame.draw.rect(screen, LEGEND_BACKGROUND, bar)
+    pygame.draw.line(screen, LEGEND_BORDER, (0, MAP_HEIGHT), (MAP_WIDTH, MAP_HEIGHT), 2)
+
+    y = MAP_HEIGHT + 12
+    state = "PAUSED" if paused else "RUNNING"
+    status = (
+        f"{state}      water {drone.water}/{drone.max_water}"
+        f"      fires {len(fire.burning_tiles)}"
+        f"      resources {len(resources)}"
+        f"      brush: {BRUSHES[brush_index][0]}"
+    )
+    screen.blit(
+        legend_item_font.render(status, True, LEGEND_HIGHLIGHT if paused else LEGEND_TEXT),
+        (16, y),
+    )
+    y += 26
+    for line in STATUS_LINES:
+        screen.blit(legend_item_font.render(line, True, LEGEND_DIM), (16, y))
+        y += 22
+
+
+def handle_event(event):
+    global paused, brush_index, setting_index, painting, paint_button
+    global drone_path, drone_mode, world_dirty, options_open, brush_open
+
+    if event.type == pygame.QUIT:
+        pygame.quit()
+        exit()
+
+    if event.type == pygame.MOUSEBUTTONDOWN and event.button in (1, 3):
+        if GEAR_HITBOX.collidepoint(event.pos):
+            options_open = not options_open
+            brush_open = False       # only one panel at a time
+            return
+        if BRUSH_HITBOX.collidepoint(event.pos):
+            brush_open = not brush_open
+            options_open = False
+            return
+        if options_open:
+            if OPTIONS_RECT.collidepoint(event.pos):
+                for index, (row, minus, plus) in enumerate(options_row_rects()):
+                    if minus.collidepoint(event.pos):
+                        setting_index = index
+                        adjust_setting(index, -1)
+                    elif plus.collidepoint(event.pos):
+                        setting_index = index
+                        adjust_setting(index, 1)
+                    elif row.collidepoint(event.pos):
+                        setting_index = index
+            else:
+                options_open = False   # click away to dismiss
+            return   # never paint through the panel
+        if brush_open:
+            if BRUSH_RECT.collidepoint(event.pos):
+                for index, row in enumerate(brush_row_rects()):
+                    if row.collidepoint(event.pos):
+                        brush_index = index
+                        brush_open = False   # picking a brush closes the panel
+            else:
+                brush_open = False
+            return   # never paint through the panel
+        tile = tile_at(event.pos)
+        if tile is not None:
+            painting = True
+            paint_button = event.button
+            paint_tile(tile, ERASE_BRUSH if event.button == 3 else None)
+    elif event.type == pygame.MOUSEBUTTONUP:
+        painting = False
+    elif event.type == pygame.MOUSEMOTION and painting:
+        index = ERASE_BRUSH if paint_button == 3 else brush_index
+        tile = tile_at(event.pos)
+        if tile is not None and BRUSHES[index][1] != "drone":
+            paint_tile(tile, index)   # dragging the drone brush would be a trail, not a move
+
+    elif event.type == pygame.KEYDOWN:
+        if event.key == pygame.K_ESCAPE:
+            if options_open or brush_open:
+                options_open = brush_open = False
+                return
+            pygame.quit()
+            exit()
+        elif event.key == pygame.K_TAB:
+            options_open = not options_open
+            brush_open = False
+        elif event.key == pygame.K_b:
+            brush_open = not brush_open
+            options_open = False
+        elif event.key == pygame.K_SPACE:
+            paused = not paused
+        elif event.key == pygame.K_PERIOD and paused:
+            drone_path, drone_mode = move_drone(drone)
+        elif pygame.K_1 <= event.key <= pygame.K_8:
+            brush_index = event.key - pygame.K_1
+            brush_open = False
+        elif event.key == pygame.K_DOWN and options_open:
+            setting_index = (setting_index + 1) % len(SETTINGS)
+        elif event.key == pygame.K_UP and options_open:
+            setting_index = (setting_index - 1) % len(SETTINGS)
+        elif event.key == pygame.K_RIGHT and options_open:
+            adjust_setting(setting_index, 1)
+        elif event.key == pygame.K_LEFT and options_open:
+            adjust_setting(setting_index, -1)
+        elif event.key == pygame.K_n:
+            SETTINGS_BY_KEY["seed"]["value"] = random.randint(0, 9999)
+            world_dirty = True
+        elif event.key == pygame.K_g:
+            build_world()
+
+
+build_world()
 
 while True:
     delta_time = clock.tick(60)
+
+    for event in pygame.event.get():
+        handle_event(event)
+
+    if paused:
+        delta_time = 0   # freeze fires and the drone, but keep drawing
+
     fire_spawn_timer += delta_time
     if fire_spawn_timer >= 3000:
         fire_spawn_timer -= 3000
-        if random.random() < 0.25:
+        if random.random() < setting("fire_rate") / 100:
             fire.spawn_random_source(tile_Map)
 
     if fire.burning_tiles:
@@ -312,17 +659,22 @@ while True:
     if drone_move_timer >= DRONE_MOVE_INTERVAL:
         drone_move_timer -= DRONE_MOVE_INTERVAL
         drone_path, drone_mode = move_drone(drone)
-        pygame.display.set_caption(f"Map Gen - water {drone.water}/{drone.max_water}")
 
-    for event in pygame.event.get():
-        if event.type == pygame.QUIT:
-            pygame.quit()
-            exit()
+    pygame.display.set_caption(
+        f"Map Gen - {'paused' if paused else 'running'}"
+        f" - water {drone.water}/{drone.max_water}"
+    )
 
     for y, row in enumerate(tile_Map):
         for x, item in enumerate(row):
             draw_tile(y, x, item)
     draw_path(drone_path, drone_mode)
     draw_drone(drone)
+    draw_hover_highlight()
     draw_legend_panel()
+    draw_status_bar()
+    if options_open:
+        draw_options_panel()
+    elif brush_open:
+        draw_brush_panel()
     pygame.display.update()
