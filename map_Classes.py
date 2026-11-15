@@ -7,6 +7,8 @@ class Resource (Enum):
     Bush = 2
     Mountain = 3
     Foam = 4
+    FireStation = 5
+    DronePad = 6
 
 
 class Terrain (Enum):
@@ -33,6 +35,8 @@ resource_Values = {
     Resource.Bush: 0.25,
     Resource.Mountain: 0,
     Resource.Foam: 0,
+    Resource.FireStation: 0,
+    Resource.DronePad: 0,
 
 }
 
@@ -44,6 +48,8 @@ resource_Blocks = {
     Resource.Bush: False,
     Resource.Mountain: True,
     Resource.Foam: False,
+    Resource.FireStation: False,
+    Resource.DronePad: False,
 
 }
 
@@ -66,6 +72,8 @@ resource_Burn = {
     Resource.Bush: 7500,
     Resource.Mountain: 0,
     Resource.Foam: 0,
+    Resource.FireStation: 0,
+    Resource.DronePad: 0,
 
 }
 
@@ -109,6 +117,7 @@ class Tile ():
         self.occupant = []
         self.fireState = fireState
         self.burn_left = 0
+        self.foam_capacity = 0
 
     def get_neighbors(self):
         print(self.row)
@@ -148,12 +157,12 @@ class Fire:
                 left.append(thing)
         tile.occupant = left
 
-    def spawn_random_source(self, tile_Map):
+    def spawn_random_source(self, tile_Map, excluded=()):
         flammable_tiles = [
             tile
             for row in tile_Map
             for tile in row
-            if can_burn(tile)
+            if can_burn(tile) and (tile.row, tile.col) not in excluded
         ]
         if flammable_tiles:
             self.ignite(random.choice(flammable_tiles))

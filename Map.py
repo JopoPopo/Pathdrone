@@ -11,6 +11,7 @@ from random_gen import noise_map
 from pathfinding import bfs_path
 from resources import place_resources
 from resources import place_features
+from resources import collect_foam
 from textures import make_textures
 
 pygame.init()
@@ -111,9 +112,19 @@ for row in tile_Map:
             water_Tiles.append(item)
 
 fire = Fire()
-fire.spawn_random_source(tile_Map)   # start with one fire so the drone has a target right away
-drone_tile = random.choice([tile for row in tile_Map for tile in row if not tile.fireState and not is_blocked(tile)])
-drone = Drone(drone_tile)
+station_tile = next(
+    (tile for row in tile_Map for tile in row if Resource.FireStation in tile.occupant),
+    None,
+)
+drone_tiles = [
+    tile for row in tile_Map for tile in row
+    if Resource.DronePad in tile.occupant
+]
+drones = [Drone(tile) for tile in drone_tiles]
+fire.spawn_random_source(
+    tile_Map,
+    excluded={(drone.row, drone.col) for drone in drones},
+)  # start with one fire so the drones have a target right away
 
 
 def draw_tile(y, x, tile):
@@ -180,14 +191,19 @@ def choose_goals(drone):
     return fires, "fire"
 
 
-def move_drone(drone):
+def move_drone(drone, occupied_positions=()):
     """Take one step toward the current goal, then act on the tile reached.
 
     The path is recalculated every step, since fires spread and new ones
     appear. Returns the path still ahead and the mode, for drawing.
     """
     goals, mode = choose_goals(drone)
-    path = bfs_path(tile_Map, (drone.row, drone.col), goals)
+    path = bfs_path(
+        tile_Map,
+        (drone.row, drone.col),
+        goals,
+        blocked_positions=occupied_positions,
+    )
     if path is None:
         return [], mode
     if len(path) > 1:
@@ -199,13 +215,11 @@ def move_drone(drone):
         drone.water -= 1
     if tile.terrain == Terrain.WATER:
         drone.water = drone.max_water
-    if Resource.Foam in tile.occupant and drone.foam < drone.max_foam:
-        tile.occupant.remove(Resource.Foam)
-        drone.foam += 1
+    collect_foam(tile, station_tile, drone)
     return path[1:], mode
 
 
-drone_path, drone_mode = [], "fire"
+drone_paths = [([], "fire") for drone in drones]
 drone_move_timer = 0
 DRONE_MOVE_INTERVAL = 250   # ms per tile
 
@@ -356,8 +370,19 @@ while True:
     drone_move_timer += delta_time
     if drone_move_timer >= DRONE_MOVE_INTERVAL:
         drone_move_timer -= DRONE_MOVE_INTERVAL
-        drone_path, drone_mode = move_drone(drone)
-        pygame.display.set_caption(f"Map Gen - water {drone.water}/{drone.max_water}")
+        drone_paths = []
+        for drone in drones:
+            occupied_positions = {
+                (other.row, other.col) for other in drones if other is not drone
+            }
+            drone_paths.append(move_drone(drone, occupied_positions))
+        water_levels = ", ".join(
+            f"{drone.water}/{drone.max_water}" for drone in drones
+        )
+        station_capacity = station_tile.foam_capacity if station_tile else 0
+        pygame.display.set_caption(
+            f"Map Gen - water {water_levels} - station foam {station_capacity}"
+        )
 
     for event in pygame.event.get():
         if event.type == pygame.QUIT:
@@ -367,7 +392,9 @@ while True:
     for y, row in enumerate(tile_Map):
         for x, item in enumerate(row):
             draw_tile(y, x, item)
-    draw_path(drone_path, drone_mode)
-    draw_drone(drone)
+    for path, mode in drone_paths:
+        draw_path(path, mode)
+    for drone in drones:
+        draw_drone(drone)
     draw_legend_panel()
     pygame.display.update()

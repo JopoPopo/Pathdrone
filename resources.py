@@ -7,8 +7,10 @@ from map_Classes import Terrain
 from map_Classes import Resource
 from random_gen import noise
 
-RESOURCE_SEED = 875
-DEPOT_SIZE = 9
+DEPOT_SIZE = 4
+STATION_FOAM_CAPACITY = 20
+CARDINAL_DIRECTIONS = ((-1, 0), (1, 0), (0, -1), (0, 1))
+DIAGONAL_DIRECTIONS = ((-1, -1), (-1, 1), (1, -1), (1, 1))
 FEATURE_SCALE = 6
 
 #share is the part of the land tiles the object covers, mountain goes first
@@ -35,33 +37,60 @@ def get_land(tile_Map):
     return land_Tiles
 
 
-def distance(tile, center):
-    return (tile.row - center.row) ** 2 + (tile.col - center.col) ** 2
-
-
-def place_resources(tile_Map, seed = RESOURCE_SEED, count = DEPOT_SIZE):
+def place_resources(tile_Map, count = DEPOT_SIZE):
     land_Tiles = get_land(tile_Map)
-    if len(land_Tiles) == 0:
+    if not land_Tiles:
         return []
 
-    #same seed picks the same center
-    center = random.Random(seed).choice(land_Tiles)
+    station_options = []
+    for center in land_Tiles:
+        adjacent = []
+        diagonals = []
+        for directions, tiles in (
+            (CARDINAL_DIRECTIONS, adjacent),
+            (DIAGONAL_DIRECTIONS, diagonals),
+        ):
+            for row_offset, col_offset in directions:
+                row = center.row + row_offset
+                col = center.col + col_offset
+                if 0 <= row < len(tile_Map) and 0 <= col < len(tile_Map[row]):
+                    tiles.append(tile_Map[row][col])
 
-    #take the closest land tile to the center one at a time
+        if (len(adjacent) == len(CARDINAL_DIRECTIONS)
+                and len(diagonals) == len(DIAGONAL_DIRECTIONS)
+                and all(tile.terrain != Terrain.WATER for tile in adjacent)):
+            station_options.append((center, adjacent, diagonals))
+
+    if not station_options:
+        return []
+
+    center, depot_Tiles, drone_Tiles = random.choice(station_options)
+    center.occupant.append(Resource.FireStation)
+    center.foam_capacity = STATION_FOAM_CAPACITY
+
     placed = []
-    for i in range(min(count, len(land_Tiles))):
-        closest = land_Tiles[0]
-        for item in land_Tiles:
-            if distance(item, center) < distance(closest, center):
-                closest = item
-        closest.occupant.append(Resource.Foam)
-        placed.append(closest)
-        land_Tiles.remove(closest)
+    for tile in depot_Tiles[:count]:
+        tile.occupant.append(Resource.Foam)
+        placed.append(tile)
+    for tile in drone_Tiles:
+        tile.occupant.append(Resource.DronePad)
     return placed
 
 
+def collect_foam(tile, station, drone):
+    if Resource.Foam not in tile.occupant or drone.foam >= drone.max_foam:
+        return False
+
+    tile.occupant.remove(Resource.Foam)
+    drone.foam += 1
+    if station is not None and station.foam_capacity > 0:
+        tile.occupant.append(Resource.Foam)
+        station.foam_capacity -= 1
+    return True
+
+
 def place_features(tile_Map):
-    #run after place_resources so the depot stays clear
+    #Keep the station, supply tiles, and drone pads clear.
     land_Tiles = get_land(tile_Map)
     placed = []
 

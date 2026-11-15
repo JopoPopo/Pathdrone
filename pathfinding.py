@@ -22,14 +22,16 @@ def neighbors(tile_Map, row, col):
                 yield r, c
 
 
-def bfs_path(tile_Map, start, goals):
+def bfs_path(tile_Map, start, goals, blocked_positions=()):
     """Shortest path from `start` to the nearest of `goals`.
 
     `start` is a (row, col) pair and `goals` is a collection of them.
+    `blocked_positions` contains coordinates occupied by other drones.
     Returns the path as a list of (row, col) from start to goal, both
     included, or None if there are no goals or none can be reached.
     """
     goals = set(goals)
+    blocked_positions = set(blocked_positions)
     came_from = {start: None}
     frontier = deque([start])
 
@@ -43,7 +45,7 @@ def bfs_path(tile_Map, start, goals):
             return path[::-1]
 
         for nxt in neighbors(tile_Map, *pos):
-            if nxt not in came_from:
+            if nxt not in blocked_positions and nxt not in came_from:
                 came_from[nxt] = pos
                 frontier.append(nxt)
 
