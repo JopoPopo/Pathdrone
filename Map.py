@@ -44,6 +44,9 @@ TILE_SIZE = max(4, min(64, (MAX_WIDTH - LEGEND_WIDTH) // MAP_COLS, MAX_HEIGHT //
 #ms between tries to start a new fire, the same on every map size
 FIRE_SPAWN_TIME = 3000
 
+#ms between spread ticks, every burning tile tries to light its neighbors
+FIRE_SPREAD_TIME = 1000
+
 MAP_WIDTH = MAP_COLS * TILE_SIZE
 MAP_HEIGHT = MAP_ROWS * TILE_SIZE
 
@@ -211,7 +214,6 @@ DRONE_MOVE_INTERVAL = 250   # ms per tile
 
 fire_spawn_timer = 0
 fire_spread_timer = 0
-fire_spread_interval = random.randint(5000, 10000)
 
 def draw_legend_panel():
     legend_rect = pygame.Rect(
@@ -344,14 +346,10 @@ while True:
     #tiles that burned long enough turn to ash
     fire.burn(delta_time)
 
-    if fire.burning_tiles:
-        fire_spread_timer += delta_time
-        if fire_spread_timer >= fire_spread_interval:
-            fire.spread(tile_Map)
-            fire_spread_timer = 0
-            fire_spread_interval = random.randint(5000, 10000)
-    else:
-        fire_spread_timer = 0
+    fire_spread_timer += delta_time
+    if fire_spread_timer >= FIRE_SPREAD_TIME:
+        fire_spread_timer -= FIRE_SPREAD_TIME
+        fire.spread(tile_Map)
 
     drone_move_timer += delta_time
     if drone_move_timer >= DRONE_MOVE_INTERVAL:
