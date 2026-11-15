@@ -5,9 +5,12 @@ from map_Classes import Tile
 from map_Classes import Terrain
 from map_Classes import Fire
 from map_Classes import Drone
+from map_Classes import Resource
+from map_Classes import is_blocked
 from random_gen import noise_map
 from pathfinding import bfs_path
 from resources import place_resources
+from resources import place_features
 
 MAP_ROWS = 20
 MAP_COLS = 40
@@ -66,9 +69,26 @@ tile_Map = [
     for row in range(MAP_ROWS)
 ]
 resources = place_resources(tile_Map)
+place_features(tile_Map)
+
+feature_Colors = {
+
+    Resource.Tree: (0, 90, 20),
+    Resource.Bush: (85, 107, 47),
+    Resource.Mountain: (150, 150, 150),
+
+}
+
+#terrain does not change so we find the water once
+water_Tiles = []
+for row in tile_Map:
+    for item in row:
+        if item.terrain == Terrain.WATER:
+            water_Tiles.append(item)
+
 fire = Fire()
 fire.spawn_random_source(tile_Map)   # start with one fire so the drone has a target right away
-drone_tile = random.choice([tile for row in tile_Map for tile in row if not tile.fireState])
+drone_tile = random.choice([tile for row in tile_Map for tile in row if not tile.fireState and not is_blocked(tile)])
 drone = Drone(drone_tile)
 
 
@@ -79,10 +99,26 @@ def draw_tile(y, x, tile):
     tile_Surface.fill(tile_Colors[tile.terrain])
     screen.blit(tile_Surface,(draw_x,draw_y))
 
-    if tile.resource:
-        center = (draw_x + TILE_SIZE // 2, draw_y + TILE_SIZE // 2)
-        pygame.draw.circle(screen, (255, 255, 255), center, TILE_SIZE // 4)
-        pygame.draw.circle(screen, (0, 0, 0), center, TILE_SIZE // 4, 2)
+    center = (draw_x + TILE_SIZE // 2, draw_y + TILE_SIZE // 2)
+
+    #draw everything in the occupant list
+    for thing in tile.occupant:
+        if thing == Resource.Foam:
+            pygame.draw.circle(screen, (255, 255, 255), center, TILE_SIZE // 4)
+            pygame.draw.circle(screen, (0, 0, 0), center, TILE_SIZE // 4, 2)
+        elif thing == Resource.Tree:
+            pygame.draw.circle(screen, feature_Colors[thing], center, TILE_SIZE // 3)
+        elif thing == Resource.Bush:
+            pygame.draw.circle(screen, feature_Colors[thing], center, TILE_SIZE // 5)
+        elif thing == Resource.Mountain:
+            edge = TILE_SIZE // 8
+            triangle = [
+                (center[0], draw_y + edge),
+                (draw_x + edge, draw_y + TILE_SIZE - edge),
+                (draw_x + TILE_SIZE - edge, draw_y + TILE_SIZE - edge),
+            ]
+            pygame.draw.polygon(screen, feature_Colors[thing], triangle)
+            pygame.draw.polygon(screen, (40, 40, 40), triangle, 2)
 
     if tile.fireState:
         # A plain square works on every OS; the fire emoji font only exists on Windows.
@@ -129,13 +165,13 @@ def draw_path(path, mode):
 
 
 def choose_goals(drone):
-    """Fires if the drone has water; otherwise the resource points.
+    """Fires if the drone has water; otherwise the nearest water tile.
 
-    It also tops up at a resource while no fires are burning, so it
+    It also tops up at water while no fires are burning, so it
     starts the next fire with a full tank.
     """
     fires = [(tile.row, tile.col) for tile in fire.burning_tiles]
-    stations = [(tile.row, tile.col) for tile in resources]
+    stations = [(tile.row, tile.col) for tile in water_Tiles]
     if drone.water == 0 or (not fires and drone.water < drone.max_water):
         return stations, "refill"
     return fires, "fire"
@@ -158,8 +194,11 @@ def move_drone(drone):
     if tile.fireState and drone.water > 0:
         fire.extinguish(tile)
         drone.water -= 1
-    if tile.resource:
+    if tile.terrain == Terrain.WATER:
         drone.water = drone.max_water
+    if Resource.Foam in tile.occupant and drone.foam < drone.max_foam:
+        tile.occupant.remove(Resource.Foam)
+        drone.foam += 1
     return path[1:], mode
 
 
