@@ -48,6 +48,28 @@ resource_Blocks = {
 }
 
 
+#how long a tile burns in ms, the burn time is the terrain plus everything on it
+terrain_Burn = {
+
+    Terrain.GRASS: 15000,
+    Terrain.WATER: 0,
+    Terrain.GRAVEL: 8000,
+    Terrain.ASH: 0,
+
+}
+
+#0 means it does not burn, so it stays when the tile turns to ash
+resource_Burn = {
+
+    Resource.Water: 0,
+    Resource.Tree: 15000,
+    Resource.Bush: 7500,
+    Resource.Mountain: 0,
+    Resource.Foam: 0,
+
+}
+
+
 def tile_value(tile):
     value = terrain_Values[tile.terrain]
     for thing in tile.occupant:
@@ -62,6 +84,22 @@ def is_blocked(tile):
     return False
 
 
+def burn_time(tile):
+    time = terrain_Burn[tile.terrain]
+    for thing in tile.occupant:
+        time += resource_Burn[thing]
+    return time
+
+
+def can_burn(tile):
+    #water and ash have nothing left to burn
+    if tile.terrain == Terrain.WATER or tile.terrain == Terrain.ASH:
+        return False
+    if tile.fireState or is_blocked(tile):
+        return False
+    return True
+
+
 class Tile ():
     
     def __init__(self, terrain: Terrain, row, col, occupant, fireState):
@@ -70,6 +108,7 @@ class Tile ():
         self.col = col
         self.occupant = []
         self.fireState = fireState
+        self.burn_left = 0
 
     def get_neighbors(self):
         print(self.row)
@@ -82,19 +121,39 @@ class Fire:
 
     def ignite(self, tile):
         tile.fireState = True
+        tile.burn_left = burn_time(tile)
         self.burning_tiles.append(tile)
 
     def extinguish(self, tile):
         tile.fireState = False
+        tile.burn_left = 0
         if tile in self.burning_tiles:
             self.burning_tiles.remove(tile)
+
+    def burn(self, delta_time):
+        #loop over a copy because tiles leave burning_tiles while we loop
+        for tile in list(self.burning_tiles):
+            tile.burn_left -= delta_time
+            if tile.burn_left <= 0:
+                self.burn_out(tile)
+
+    def burn_out(self, tile):
+        self.extinguish(tile)
+        tile.terrain = Terrain.ASH
+
+        #trees and bushes are destroyed, foam and mountains stay
+        left = []
+        for thing in tile.occupant:
+            if resource_Burn[thing] == 0:
+                left.append(thing)
+        tile.occupant = left
 
     def spawn_random_source(self, tile_Map):
         flammable_tiles = [
             tile
             for row in tile_Map
             for tile in row
-            if tile.terrain != Terrain.WATER and not tile.fireState and not is_blocked(tile)
+            if can_burn(tile)
         ]
         if flammable_tiles:
             self.ignite(random.choice(flammable_tiles))
@@ -110,7 +169,7 @@ class Fire:
 
                 if 0 <= neighbor_row < len(tile_Map) and 0 <= neighbor_col < len(tile_Map[neighbor_row]):
                     neighbor = tile_Map[neighbor_row][neighbor_col]
-                    if neighbor.terrain != Terrain.WATER and not neighbor.fireState and not is_blocked(neighbor):
+                    if can_burn(neighbor):
                         neighbors.append(neighbor)
 
             if neighbors:
