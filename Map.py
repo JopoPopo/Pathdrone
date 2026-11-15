@@ -1,3 +1,4 @@
+import argparse
 import pygame
 import math
 import random
@@ -6,23 +7,60 @@ from map_Classes import Tile
 from map_Classes import Terrain
 from map_Classes import Fire
 from map_Classes import Drone
+from map_Classes import Resource
+from map_Classes import is_blocked
+from map_Classes import can_burn
 from random_gen import noise_map
-from pathfinding import bfs_path
+from algorithms import ALGORITHMS
 from resources import place_resources, RESOURCE_SEED
+from resources import place_features
+from textures import make_textures
 
-MAP_ROWS = 20
-MAP_COLS = 40
-TILE_SIZE = 25
+# Pick the starting algorithm with: python Map.py --algorithm priority
+# You can also switch while it runs: click a button in the panel, or press F1 / F2.
+parser = argparse.ArgumentParser(description="Drone fire simulation")
+parser.add_argument("--algorithm", choices=list(ALGORITHMS), default="priority",
+                    help="which drone algorithm to start with")
+args = parser.parse_args()
+
+pygame.init()
+
+#pick the map size here, Small, Medium or Large
+MAP_SIZE = "Small"
+
+#rows, cols and the terrain seed for each map size
+map_Sizes = {
+
+    "Small": (20, 40, 8),
+    "Medium": (30, 60, 13),
+    "Large": (40, 80, 13),
+
+}
+
+MAP_ROWS = map_Sizes[MAP_SIZE][0]
+MAP_COLS = map_Sizes[MAP_SIZE][1]
+MAP_SEED = map_Sizes[MAP_SIZE][2]
+
+#the window should not pass the pixels of the monitor, a little is left for the title bar and taskbar
+SCREEN_WIDTH = pygame.display.get_desktop_sizes()[0][0]
+SCREEN_HEIGHT = pygame.display.get_desktop_sizes()[0][1]
+MAX_WIDTH = SCREEN_WIDTH - 20
+MAX_HEIGHT = SCREEN_HEIGHT - 120
+LEGEND_WIDTH = 320
+STATUS_HEIGHT = 130
+
+#the tiles are as big as the monitor allows, bigger maps get smaller tiles
+TILE_SIZE = max(4, min(64, (MAX_WIDTH - LEGEND_WIDTH) // MAP_COLS, (MAX_HEIGHT - STATUS_HEIGHT) // MAP_ROWS))
+
+#ms between tries to start a new fire, the same on every map size
+FIRE_SPAWN_TIME = 3000
 
 MAP_WIDTH = MAP_COLS * TILE_SIZE
 MAP_HEIGHT = MAP_ROWS * TILE_SIZE
-LEGEND_WIDTH = 320
-STATUS_HEIGHT = 130
 
 WINDOW_WIDTH = MAP_WIDTH + LEGEND_WIDTH
 WINDOW_HEIGHT = MAP_HEIGHT + STATUS_HEIGHT
 
-pygame.init()
 screen = pygame.display.set_mode((WINDOW_WIDTH, WINDOW_HEIGHT))
 pygame.display.set_caption('Map Gen')
 clock = pygame.time.Clock()
@@ -48,6 +86,10 @@ tile_Colors = {
     Terrain.ASH: (178, 190, 181),
 
 }
+
+#the textures are drawn once here, the screen has to be open first
+tile_Textures, feature_Textures, fire_Texture = make_textures(TILE_SIZE, tile_Colors)
+
 LEGEND_ITEMS = (
     ("Grass", Terrain.GRASS),
     ("Water", Terrain.WATER),
@@ -169,7 +211,7 @@ def brush_row_rects():
 
 def build_world():
     """Create a fresh map, resources, fire and drone from the current settings."""
-    global tile_Map, resources, fire, drone, drone_path, drone_mode, world_dirty
+    global tile_Map, resources, fire, drone, drone_path, drone_mode, world_dirty, water_Tiles
     global drone_move_timer, fire_spawn_timer, fire_spread_timer, fire_spread_interval
 
     noise_Map = noise_map(MAP_COLS, MAP_ROWS, setting("seed"), setting("scale"), setting("octaves"))
@@ -182,12 +224,16 @@ def build_world():
     resources = place_resources(
         tile_Map,
         seed=RESOURCE_SEED + setting("seed"),
-        threshold=1 - setting("resources") / 100,
+        count=int(sum(tile.terrain != Terrain.WATER for row in tile_Map for tile in row)
+                  * setting("resources") / 100),
     )
+    place_features(tile_Map)
+    water_Tiles = [tile for row in tile_Map for tile in row if tile.terrain == Terrain.WATER]
     fire = Fire()
     fire.spawn_random_source(tile_Map)   # start with one fire so the drone has a target right away
-    open_tiles = [tile for row in tile_Map for tile in row if not tile.fireState]
+    open_tiles = [tile for row in tile_Map for tile in row if not tile.fireState and not is_blocked(tile)]
     drone = Drone(random.choice(open_tiles or [tile_Map[0][0]]), max_water=setting("tank"))
+    set_algorithm(algorithm_key)
 
     drone_path, drone_mode = [], "fire"
     drone_move_timer = 0
@@ -198,33 +244,41 @@ def build_world():
 
 
 def clear_resource(tile):
-    tile.resource = False
+    if Resource.Foam in tile.occupant:
+        tile.occupant.remove(Resource.Foam)
     if tile in resources:
         resources.remove(tile)
 
 
 def paint_tile(tile, index=None):
     """Apply a brush to one tile, defaulting to the selected one."""
+    global drone_path, water_Tiles
     label, kind, payload = BRUSHES[brush_index if index is None else index]
 
     if kind == "terrain":
         tile.terrain = payload
+        if payload in (Terrain.WATER, Terrain.ASH):
+            fire.extinguish(tile)
         if payload == Terrain.WATER:
             # Water can't burn and can't hold a resource point.
-            fire.extinguish(tile)
             clear_resource(tile)
+            tile.occupant.clear()
+        water_Tiles = [item for row in tile_Map for item in row if item.terrain == Terrain.WATER]
+        set_algorithm(algorithm_key)
     elif kind == "fire":
-        if tile.terrain != Terrain.WATER and not tile.fireState:
+        if can_burn(tile):
             fire.ignite(tile)
     elif kind == "resource":
-        if tile.terrain != Terrain.WATER and not tile.resource:
-            tile.resource = True
+        if tile.terrain != Terrain.WATER and not is_blocked(tile) and Resource.Foam not in tile.occupant:
+            tile.occupant.append(Resource.Foam)
             resources.append(tile)
     elif kind == "erase":
         fire.extinguish(tile)
         clear_resource(tile)
-    elif kind == "drone":
+    elif kind == "drone" and not is_blocked(tile):
         drone.row, drone.col = tile.row, tile.col
+        set_algorithm(algorithm_key)
+    drone_path = []
 
 
 def tile_at(pos):
@@ -235,26 +289,31 @@ def tile_at(pos):
     return tile_Map[y // TILE_SIZE][x // TILE_SIZE]
 
 
+def set_algorithm(key):
+    """Switch the drone's brain. The new algorithm starts with a clean slate."""
+    global algorithm_key, algorithm
+    algorithm_key = key
+    algorithm = ALGORITHMS[key](tile_Map, water_Tiles)
+
+
+algorithm_key = args.algorithm
+
+
 def draw_tile(y, x, tile):
     draw_x = x * TILE_SIZE
     draw_y = y * TILE_SIZE
 
-    tile_Surface.fill(tile_Colors[tile.terrain])
-    screen.blit(tile_Surface,(draw_x,draw_y))
+    #each terrain has a few textures, the position picks one so the map does not repeat
+    versions = tile_Textures[tile.terrain]
+    screen.blit(versions[(x * 73856093 + y * 19349663) % len(versions)], (draw_x, draw_y))
 
-    if tile.resource:
-        center = (draw_x + TILE_SIZE // 2, draw_y + TILE_SIZE // 2)
-        pygame.draw.circle(screen, (255, 255, 255), center, TILE_SIZE // 4)
-        pygame.draw.circle(screen, (0, 0, 0), center, TILE_SIZE // 4, 2)
+    #draw everything in the occupant list
+    for thing in tile.occupant:
+        if thing in feature_Textures:
+            screen.blit(feature_Textures[thing], (draw_x, draw_y))
 
     if tile.fireState:
-        # A plain square works on every OS; the fire emoji font only exists on Windows.
-        inset = TILE_SIZE // 8
-        pygame.draw.rect(
-            screen,
-            FIRE_COLOR,
-            (draw_x + inset, draw_y + inset, TILE_SIZE - 2 * inset, TILE_SIZE - 2 * inset),
-        )
+        screen.blit(fire_Texture, (draw_x, draw_y))
 
 
 def draw_drone(drone):
@@ -285,7 +344,7 @@ def draw_drone_glyph(center_x, center_y, size):
     pygame.draw.circle(screen, color, (center_x, center_y), body_radius)
 
 
-PATH_COLORS = {"fire": (255, 255, 255), "refill": (0, 255, 255)}
+PATH_COLORS = {"fire": (255, 255, 255), "refill": (0, 255, 255), "home": (120, 120, 120)}
 
 
 def draw_path(path, mode):
@@ -311,28 +370,14 @@ def draw_hover_highlight():
     )
 
 
-def choose_goals(drone):
-    """Fires if the drone has water; otherwise the resource points.
-
-    It also tops up at a resource while no fires are burning, so it
-    starts the next fire with a full tank.
-    """
-    fires = [(tile.row, tile.col) for tile in fire.burning_tiles]
-    stations = [(tile.row, tile.col) for tile in resources]
-    if drone.water == 0 or (not fires and drone.water < drone.max_water):
-        return stations, "refill"
-    return fires, "fire"
-
-
 def move_drone(drone):
     """Take one step toward the current goal, then act on the tile reached.
 
     The path is recalculated every step, since fires spread and new ones
     appear. Returns the path still ahead and the mode, for drawing.
     """
-    goals, mode = choose_goals(drone)
-    path = bfs_path(tile_Map, (drone.row, drone.col), goals)
-    if path is None:
+    path, mode = algorithm.next_path(drone, fire.burning_tiles)
+    if not path:
         return [], mode
     if len(path) > 1:
         drone.row, drone.col = path[1]
@@ -341,8 +386,11 @@ def move_drone(drone):
     if tile.fireState and drone.water > 0:
         fire.extinguish(tile)
         drone.water -= 1
-    if tile.resource:
+    if tile.terrain == Terrain.WATER:
         drone.water = drone.max_water
+    if Resource.Foam in tile.occupant and drone.foam < drone.max_foam:
+        clear_resource(tile)
+        drone.foam += 1
     return path[1:], mode
 
 
@@ -517,6 +565,52 @@ STATUS_LINES = (
     "BRUSH button or B  brushes      OPTIONS button or TAB  settings      G  rebuild      N  seed",
 )
 
+# ---- algorithm picker (bottom of the side panel) ---------------------------
+
+BUTTON_HEIGHT = 34
+BUTTON_GAP = 8
+BUTTON_ACTIVE = (70, 130, 220)
+BUTTON_IDLE = (60, 64, 74)
+PICKER_TOP = 330   # just below the legend's fire and drone rows
+
+
+def algorithm_buttons():
+    """(key, rect) for each algorithm button, in ALGORITHMS order."""
+    buttons = []
+    for index, key in enumerate(ALGORITHMS):
+        y = PICKER_TOP + 34 + index * (BUTTON_HEIGHT + BUTTON_GAP)
+        buttons.append((key, pygame.Rect(MAP_WIDTH + 20, y, LEGEND_WIDTH - 40, BUTTON_HEIGHT)))
+    return buttons
+
+
+def draw_algorithm_picker():
+    title = legend_item_font.render("ALGORITHM", True, (240, 240, 240))
+    screen.blit(title, (MAP_WIDTH + 20, PICKER_TOP))
+    for index, (key, rect) in enumerate(algorithm_buttons()):
+        color = BUTTON_ACTIVE if key == algorithm_key else BUTTON_IDLE
+        pygame.draw.rect(screen, color, rect, border_radius=6)
+        pygame.draw.rect(screen, LEGEND_BORDER, rect, 1, border_radius=6)
+        label = legend_item_font.render(f"F{index + 1}. {ALGORITHMS[key].name}", True, (240, 240, 240))
+        screen.blit(label, label.get_rect(midleft=(rect.x + 10, rect.centery)))
+
+
+def handle_algorithm_input(event):
+    """Clicks on a button or function keys F1, F2, ... choose the algorithm."""
+    global drone_path
+    chosen = None
+    if event.type == pygame.MOUSEBUTTONDOWN and event.button == 1:
+        for key, rect in algorithm_buttons():
+            if rect.collidepoint(event.pos):
+                chosen = key
+    elif event.type == pygame.KEYDOWN and pygame.K_F1 <= event.key <= pygame.K_F9:
+        keys = list(ALGORITHMS)
+        index = event.key - pygame.K_F1
+        if index < len(keys):
+            chosen = keys[index]
+    if chosen and chosen != algorithm_key:
+        set_algorithm(chosen)
+        drone_path = []
+
 
 def draw_status_bar():
     bar = pygame.Rect(0, MAP_HEIGHT, MAP_WIDTH, STATUS_HEIGHT)
@@ -581,6 +675,7 @@ def handle_event(event):
             else:
                 brush_open = False
             return   # never paint through the panel
+        handle_algorithm_input(event)
         tile = tile_at(event.pos)
         if tile is not None:
             painting = True
@@ -595,6 +690,8 @@ def handle_event(event):
             paint_tile(tile, index)   # dragging the drone brush would be a trail, not a move
 
     elif event.type == pygame.KEYDOWN:
+        if not options_open and not brush_open:
+            handle_algorithm_input(event)
         if event.key == pygame.K_ESCAPE:
             if options_open or brush_open:
                 options_open = brush_open = False
@@ -641,10 +738,13 @@ while True:
         delta_time = 0   # freeze fires and the drone, but keep drawing
 
     fire_spawn_timer += delta_time
-    if fire_spawn_timer >= 3000:
-        fire_spawn_timer -= 3000
+    if fire_spawn_timer >= FIRE_SPAWN_TIME:
+        fire_spawn_timer -= FIRE_SPAWN_TIME
         if random.random() < setting("fire_rate") / 100:
             fire.spawn_random_source(tile_Map)
+
+    #tiles that burned long enough turn to ash
+    fire.burn(delta_time)
 
     if fire.burning_tiles:
         fire_spread_timer += delta_time
@@ -661,7 +761,7 @@ while True:
         drone_path, drone_mode = move_drone(drone)
 
     pygame.display.set_caption(
-        f"Map Gen - {'paused' if paused else 'running'}"
+        f"Map Gen - {algorithm.name} - {'paused' if paused else 'running'}"
         f" - water {drone.water}/{drone.max_water}"
     )
 
@@ -672,6 +772,7 @@ while True:
     draw_drone(drone)
     draw_hover_highlight()
     draw_legend_panel()
+    draw_algorithm_picker()
     draw_status_bar()
     if options_open:
         draw_options_panel()

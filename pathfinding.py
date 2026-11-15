@@ -3,11 +3,13 @@
 Breadth-first search over the tile grid, moving up, down, left or right.
 It finds the path with the fewest steps to the nearest goal tile.
 
-The drone flies, so every tile is passable for now. When obstacles exist,
-skip them in `neighbors`.
+The drone flies, so every tile is passable except the blocked ones
+(mountains). `neighbors` skips those.
 """
 
 from collections import deque
+
+from map_Classes import is_blocked
 
 DIRECTIONS = ((-1, 0), (1, 0), (0, -1), (0, 1))
 
@@ -16,7 +18,8 @@ def neighbors(tile_Map, row, col):
     for d_row, d_col in DIRECTIONS:
         r, c = row + d_row, col + d_col
         if 0 <= r < len(tile_Map) and 0 <= c < len(tile_Map[r]):
-            yield r, c
+            if not is_blocked(tile_Map[r][c]):
+                yield r, c
 
 
 def bfs_path(tile_Map, start, goals):
@@ -45,6 +48,24 @@ def bfs_path(tile_Map, start, goals):
                 frontier.append(nxt)
 
     return None
+
+
+def distance_map(tile_Map, sources):
+    """Steps from the nearest of `sources` to every reachable tile.
+
+    One BFS that starts from all sources at once. Returns a dict of
+    {(row, col): steps}. Useful for asking "how far is every station
+    from this fire?" in a single pass.
+    """
+    dist = {pos: 0 for pos in sources}
+    frontier = deque(dist)
+    while frontier:
+        pos = frontier.popleft()
+        for nxt in neighbors(tile_Map, *pos):
+            if nxt not in dist:
+                dist[nxt] = dist[pos] + 1
+                frontier.append(nxt)
+    return dist
 
 
 if __name__ == "__main__":
