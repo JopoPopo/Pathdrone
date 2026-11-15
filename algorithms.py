@@ -13,7 +13,7 @@ To add a new algorithm, write a class like the ones below and add it to
 ALGORITHMS at the bottom of this file.
 """
 
-from map_Classes import Terrain, is_blocked, tile_value
+from map_Classes import Terrain, can_burn, is_blocked, tile_value
 from pathfinding import bfs_path, distance_map, neighbors
 
 
@@ -173,8 +173,7 @@ class PriorityPlanner:
         """Unburnt neighbors this burning tile could spread to."""
         risky = []
         for r, c in neighbors(self.tile_Map, *pos):
-            tile = self.tile_Map[r][c]
-            if (r, c) not in burning and tile.terrain != Terrain.WATER and not is_blocked(tile):
+            if (r, c) not in burning and can_burn(self.tile_Map[r][c]):
                 risky.append((r, c))
         return risky
 
