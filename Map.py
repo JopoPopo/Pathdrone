@@ -6,7 +6,7 @@ from map_Classes import Terrain
 from map_Classes import Fire
 from map_Classes import Drone
 from random_gen import noise_map
-from pathfinding import path_to_nearest_fire
+from pathfinding import bfs_path
 from resources import place_resources
 
 MAP_ROWS = 20
@@ -97,32 +97,53 @@ def draw_drone(drone):
     pygame.draw.circle(screen, color, (center_x, center_y), body_radius)
 
 
-def draw_path(path):
+PATH_COLORS = {"fire": (255, 255, 255), "refill": (0, 255, 255)}
+
+
+def draw_path(path, mode):
     if len(path) < 2:
         return
     half = TILE_SIZE // 2
     points = [(col * TILE_SIZE + half, row * TILE_SIZE + half) for row, col in path]
-    pygame.draw.lines(screen, (255, 255, 255), False, points, 2)
+    pygame.draw.lines(screen, PATH_COLORS[mode], False, points, 2)
+
+
+def choose_goals(drone):
+    """Fires if the drone has water; otherwise the resource points.
+
+    It also tops up at a resource while no fires are burning, so it
+    starts the next fire with a full tank.
+    """
+    fires = [(tile.row, tile.col) for tile in fire.burning_tiles]
+    stations = [(tile.row, tile.col) for tile in resources]
+    if drone.water == 0 or (not fires and drone.water < drone.max_water):
+        return stations, "refill"
+    return fires, "fire"
 
 
 def move_drone(drone):
-    """Move one tile toward the nearest fire and put it out on arrival.
+    """Take one step toward the current goal, then act on the tile reached.
 
     The path is recalculated every step, since fires spread and new ones
-    appear. Returns the path still ahead, for drawing.
+    appear. Returns the path still ahead and the mode, for drawing.
     """
-    path = path_to_nearest_fire(tile_Map, (drone.row, drone.col), fire)
+    goals, mode = choose_goals(drone)
+    path = bfs_path(tile_Map, (drone.row, drone.col), goals)
     if path is None:
-        return []
+        return [], mode
     if len(path) > 1:
         drone.row, drone.col = path[1]
+
     tile = tile_Map[drone.row][drone.col]
-    if tile.fireState:
+    if tile.fireState and drone.water > 0:
         fire.extinguish(tile)
-    return path[1:]
+        drone.water -= 1
+    if tile.resource:
+        drone.water = drone.max_water
+    return path[1:], mode
 
 
-drone_path = []
+drone_path, drone_mode = [], "fire"
 drone_move_timer = 0
 DRONE_MOVE_INTERVAL = 250   # ms per tile
 
@@ -150,7 +171,8 @@ while True:
     drone_move_timer += delta_time
     if drone_move_timer >= DRONE_MOVE_INTERVAL:
         drone_move_timer -= DRONE_MOVE_INTERVAL
-        drone_path = move_drone(drone)
+        drone_path, drone_mode = move_drone(drone)
+        pygame.display.set_caption(f"Map Gen - water {drone.water}/{drone.max_water}")
 
     for event in pygame.event.get():
         if event.type == pygame.QUIT:
@@ -160,6 +182,6 @@ while True:
     for y, row in enumerate(tile_Map):
         for x, item in enumerate(row):
             draw_tile(y, x, item)
-    draw_path(drone_path)
+    draw_path(drone_path, drone_mode)
     draw_drone(drone)
     pygame.display.update()

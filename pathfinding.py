@@ -47,11 +47,6 @@ def bfs_path(tile_Map, start, goals):
     return None
 
 
-def path_to_nearest_fire(tile_Map, start, fire):
-    goals = [(tile.row, tile.col) for tile in fire.burning_tiles]
-    return bfs_path(tile_Map, start, goals)
-
-
 if __name__ == "__main__":
     # Quick check: run `python pathfinding.py` to see a path on a small grid.
     from map_Classes import Tile, Terrain

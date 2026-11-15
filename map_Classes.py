@@ -70,6 +70,8 @@ class Fire:
 
 class Drone:
 
-    def __init__(self, tile):
+    def __init__(self, tile, max_water=1):
         self.row = tile.row
         self.col = tile.col
+        self.max_water = max_water   # fires it can put out before refilling
+        self.water = max_water
