@@ -10,7 +10,10 @@ python Map.py --algorithm nearest    # starts with the baseline
 ```
 
 While it runs, switch the drone's algorithm by clicking a button under
-**ALGORITHM** in the side panel, or by pressing `1` / `2`.
+**ALGORITHM** in the side panel, or by pressing `F1` / `F2`.
+Keys `1`–`8` select map brushes (`B` opens the brush panel). Resource brushes
+place foam depots; the drone refills water on water terrain. Press `TAB` for
+settings, `G` to rebuild, `SPACE` to pause/resume, or `.` to step while paused.
 
 | Algorithm | What it does |
 |---|---|
