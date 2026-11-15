@@ -6,6 +6,8 @@ from map_Classes import Terrain
 from map_Classes import Fire
 from map_Classes import Drone
 from random_gen import noise_map
+from pathfinding import bfs_path
+from resources import place_resources
 
 MAP_ROWS = 20
 MAP_COLS = 40
@@ -43,7 +45,9 @@ tile_Map = [
      for col in range(MAP_COLS)]
     for row in range(MAP_ROWS)
 ]
+resources = place_resources(tile_Map)
 fire = Fire()
+fire.spawn_random_source(tile_Map)   # start with one fire so the drone has a target right away
 drone_tile = random.choice([tile for row in tile_Map for tile in row if not tile.fireState])
 drone = Drone(drone_tile)
 
@@ -55,11 +59,18 @@ def draw_tile(y, x, tile):
     tile_Surface.fill(tile_Colors[tile.terrain])
     screen.blit(tile_Surface,(draw_x,draw_y))
 
+    if tile.resource:
+        center = (draw_x + TILE_SIZE // 2, draw_y + TILE_SIZE // 2)
+        pygame.draw.circle(screen, (255, 255, 255), center, TILE_SIZE // 4)
+        pygame.draw.circle(screen, (0, 0, 0), center, TILE_SIZE // 4, 2)
+
     if tile.fireState:
-        fire_emoji = fire_font.render("\U0001F525", True, (255, 100, 20))
-        screen.blit(
-            fire_emoji,
-            fire_emoji.get_rect(center=(draw_x + TILE_SIZE // 2, draw_y + TILE_SIZE // 2)),
+        # A plain square works on every OS; the fire emoji font only exists on Windows.
+        inset = TILE_SIZE // 8
+        pygame.draw.rect(
+            screen,
+            (255, 69, 0),
+            (draw_x + inset, draw_y + inset, TILE_SIZE - 2 * inset, TILE_SIZE - 2 * inset),
         )
 
 
@@ -86,6 +97,56 @@ def draw_drone(drone):
     pygame.draw.circle(screen, color, (center_x, center_y), body_radius)
 
 
+PATH_COLORS = {"fire": (255, 255, 255), "refill": (0, 255, 255)}
+
+
+def draw_path(path, mode):
+    if len(path) < 2:
+        return
+    half = TILE_SIZE // 2
+    points = [(col * TILE_SIZE + half, row * TILE_SIZE + half) for row, col in path]
+    pygame.draw.lines(screen, PATH_COLORS[mode], False, points, 2)
+
+
+def choose_goals(drone):
+    """Fires if the drone has water; otherwise the resource points.
+
+    It also tops up at a resource while no fires are burning, so it
+    starts the next fire with a full tank.
+    """
+    fires = [(tile.row, tile.col) for tile in fire.burning_tiles]
+    stations = [(tile.row, tile.col) for tile in resources]
+    if drone.water == 0 or (not fires and drone.water < drone.max_water):
+        return stations, "refill"
+    return fires, "fire"
+
+
+def move_drone(drone):
+    """Take one step toward the current goal, then act on the tile reached.
+
+    The path is recalculated every step, since fires spread and new ones
+    appear. Returns the path still ahead and the mode, for drawing.
+    """
+    goals, mode = choose_goals(drone)
+    path = bfs_path(tile_Map, (drone.row, drone.col), goals)
+    if path is None:
+        return [], mode
+    if len(path) > 1:
+        drone.row, drone.col = path[1]
+
+    tile = tile_Map[drone.row][drone.col]
+    if tile.fireState and drone.water > 0:
+        fire.extinguish(tile)
+        drone.water -= 1
+    if tile.resource:
+        drone.water = drone.max_water
+    return path[1:], mode
+
+
+drone_path, drone_mode = [], "fire"
+drone_move_timer = 0
+DRONE_MOVE_INTERVAL = 250   # ms per tile
+
 fire_spawn_timer = 0
 fire_spread_timer = 0
 fire_spread_interval = random.randint(5000, 10000)
@@ -107,6 +168,12 @@ while True:
     else:
         fire_spread_timer = 0
 
+    drone_move_timer += delta_time
+    if drone_move_timer >= DRONE_MOVE_INTERVAL:
+        drone_move_timer -= DRONE_MOVE_INTERVAL
+        drone_path, drone_mode = move_drone(drone)
+        pygame.display.set_caption(f"Map Gen - water {drone.water}/{drone.max_water}")
+
     for event in pygame.event.get():
         if event.type == pygame.QUIT:
             pygame.quit()
@@ -115,5 +182,6 @@ while True:
     for y, row in enumerate(tile_Map):
         for x, item in enumerate(row):
             draw_tile(y, x, item)
+    draw_path(drone_path, drone_mode)
     draw_drone(drone)
     pygame.display.update()

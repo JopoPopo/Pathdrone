@@ -16,6 +16,7 @@ class Tile ():
         self.col = col
         self.occupant = occupant
         self.fireState = fireState
+        self.resource = False
 
     def get_neighbors(self):
         print(self.row)
@@ -29,6 +30,11 @@ class Fire:
     def ignite(self, tile):
         tile.fireState = True
         self.burning_tiles.append(tile)
+
+    def extinguish(self, tile):
+        tile.fireState = False
+        if tile in self.burning_tiles:
+            self.burning_tiles.remove(tile)
 
     def spawn_random_source(self, tile_Map):
         flammable_tiles = [
@@ -64,6 +70,8 @@ class Fire:
 
 class Drone:
 
-    def __init__(self, tile):
+    def __init__(self, tile, max_water=1):
         self.row = tile.row
         self.col = tile.col
+        self.max_water = max_water   # fires it can put out before refilling
+        self.water = max_water
