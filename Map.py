@@ -1,3 +1,4 @@
+import argparse
 import pygame
 import random
 from sys import exit
@@ -8,9 +9,16 @@ from map_Classes import Drone
 from map_Classes import Resource
 from map_Classes import is_blocked
 from random_gen import noise_map
-from pathfinding import bfs_path
+from algorithms import ALGORITHMS
 from resources import place_resources
 from resources import place_features
+
+# Pick the starting algorithm with: python Map.py --algorithm priority
+# You can also switch while it runs: click a button in the panel, or press 1 / 2.
+parser = argparse.ArgumentParser(description="Drone fire simulation")
+parser.add_argument("--algorithm", choices=list(ALGORITHMS), default="priority",
+                    help="which drone algorithm to start with")
+args = parser.parse_args()
 
 MAP_ROWS = 20
 MAP_COLS = 40
@@ -92,6 +100,16 @@ drone_tile = random.choice([tile for row in tile_Map for tile in row if not tile
 drone = Drone(drone_tile)
 
 
+def set_algorithm(key):
+    """Switch the drone's brain. The new algorithm starts with a clean slate."""
+    global algorithm_key, algorithm
+    algorithm_key = key
+    algorithm = ALGORITHMS[key](tile_Map, water_Tiles)
+
+
+set_algorithm(args.algorithm)
+
+
 def draw_tile(y, x, tile):
     draw_x = x * TILE_SIZE
     draw_y = y * TILE_SIZE
@@ -153,7 +171,7 @@ def draw_drone(drone):
     pygame.draw.circle(screen, color, (center_x, center_y), body_radius)
 
 
-PATH_COLORS = {"fire": (255, 255, 255), "refill": (0, 255, 255)}
+PATH_COLORS = {"fire": (255, 255, 255), "refill": (0, 255, 255), "home": (120, 120, 120)}
 
 
 def draw_path(path, mode):
@@ -164,28 +182,14 @@ def draw_path(path, mode):
     pygame.draw.lines(screen, PATH_COLORS[mode], False, points, 2)
 
 
-def choose_goals(drone):
-    """Fires if the drone has water; otherwise the nearest water tile.
-
-    It also tops up at water while no fires are burning, so it
-    starts the next fire with a full tank.
-    """
-    fires = [(tile.row, tile.col) for tile in fire.burning_tiles]
-    stations = [(tile.row, tile.col) for tile in water_Tiles]
-    if drone.water == 0 or (not fires and drone.water < drone.max_water):
-        return stations, "refill"
-    return fires, "fire"
-
-
 def move_drone(drone):
     """Take one step toward the current goal, then act on the tile reached.
 
     The path is recalculated every step, since fires spread and new ones
     appear. Returns the path still ahead and the mode, for drawing.
     """
-    goals, mode = choose_goals(drone)
-    path = bfs_path(tile_Map, (drone.row, drone.col), goals)
-    if path is None:
+    path, mode = algorithm.next_path(drone, fire.burning_tiles)
+    if not path:
         return [], mode
     if len(path) > 1:
         drone.row, drone.col = path[1]
@@ -329,6 +333,52 @@ def draw_legend_panel():
 
 
 
+# ---- algorithm picker (bottom of the side panel) ---------------------------
+
+BUTTON_HEIGHT = 34
+BUTTON_GAP = 8
+BUTTON_ACTIVE = (70, 130, 220)
+BUTTON_IDLE = (60, 64, 74)
+PICKER_TOP = WINDOW_HEIGHT - 30 - len(ALGORITHMS) * (BUTTON_HEIGHT + BUTTON_GAP) - 34
+
+
+def algorithm_buttons():
+    """(key, rect) for each algorithm button, in ALGORITHMS order."""
+    buttons = []
+    for index, key in enumerate(ALGORITHMS):
+        y = PICKER_TOP + 34 + index * (BUTTON_HEIGHT + BUTTON_GAP)
+        buttons.append((key, pygame.Rect(MAP_WIDTH + 20, y, LEGEND_WIDTH - 40, BUTTON_HEIGHT)))
+    return buttons
+
+
+def draw_algorithm_picker():
+    title = legend_item_font.render("ALGORITHM", True, (240, 240, 240))
+    screen.blit(title, (MAP_WIDTH + 20, PICKER_TOP))
+    for index, (key, rect) in enumerate(algorithm_buttons()):
+        color = BUTTON_ACTIVE if key == algorithm_key else BUTTON_IDLE
+        pygame.draw.rect(screen, color, rect, border_radius=6)
+        pygame.draw.rect(screen, LEGEND_BORDER, rect, 1, border_radius=6)
+        label = legend_item_font.render(f"{index + 1}. {ALGORITHMS[key].name}", True, (240, 240, 240))
+        screen.blit(label, label.get_rect(midleft=(rect.x + 10, rect.centery)))
+
+
+def handle_algorithm_input(event):
+    """Clicks on a button or number keys 1, 2, ... choose the algorithm."""
+    global drone_path
+    chosen = None
+    if event.type == pygame.MOUSEBUTTONDOWN and event.button == 1:
+        for key, rect in algorithm_buttons():
+            if rect.collidepoint(event.pos):
+                chosen = key
+    elif event.type == pygame.KEYDOWN and pygame.K_1 <= event.key <= pygame.K_9:
+        keys = list(ALGORITHMS)
+        index = event.key - pygame.K_1
+        if index < len(keys):
+            chosen = keys[index]
+    if chosen and chosen != algorithm_key:
+        set_algorithm(chosen)
+        drone_path = []
+
 
 while True:
     delta_time = clock.tick(60)
@@ -351,12 +401,15 @@ while True:
     if drone_move_timer >= DRONE_MOVE_INTERVAL:
         drone_move_timer -= DRONE_MOVE_INTERVAL
         drone_path, drone_mode = move_drone(drone)
-        pygame.display.set_caption(f"Map Gen - water {drone.water}/{drone.max_water}")
+        pygame.display.set_caption(
+            f"Map Gen - {algorithm.name} - water {drone.water}/{drone.max_water}"
+        )
 
     for event in pygame.event.get():
         if event.type == pygame.QUIT:
             pygame.quit()
             exit()
+        handle_algorithm_input(event)
 
     for y, row in enumerate(tile_Map):
         for x, item in enumerate(row):
@@ -364,4 +417,5 @@ while True:
     draw_path(drone_path, drone_mode)
     draw_drone(drone)
     draw_legend_panel()
+    draw_algorithm_picker()
     pygame.display.update()

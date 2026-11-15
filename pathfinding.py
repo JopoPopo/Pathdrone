@@ -50,6 +50,24 @@ def bfs_path(tile_Map, start, goals):
     return None
 
 
+def distance_map(tile_Map, sources):
+    """Steps from the nearest of `sources` to every reachable tile.
+
+    One BFS that starts from all sources at once. Returns a dict of
+    {(row, col): steps}. Useful for asking "how far is every station
+    from this fire?" in a single pass.
+    """
+    dist = {pos: 0 for pos in sources}
+    frontier = deque(dist)
+    while frontier:
+        pos = frontier.popleft()
+        for nxt in neighbors(tile_Map, *pos):
+            if nxt not in dist:
+                dist[nxt] = dist[pos] + 1
+                frontier.append(nxt)
+    return dist
+
+
 if __name__ == "__main__":
     # Quick check: run `python pathfinding.py` to see a path on a small grid.
     from map_Classes import Tile, Terrain
