@@ -119,7 +119,7 @@ SETTINGS = [
     {"key": "scale",     "label": "Terrain scale", "value": 8,  "min": 1, "max": 32,   "step": 1, "regen": True},
     {"key": "octaves",   "label": "Terrain detail","value": 3,  "min": 1, "max": 6,    "step": 1, "regen": True},
     {"key": "tank",      "label": "Drone tank",    "value": 1,  "min": 1, "max": 10,   "step": 1, "regen": True},
-    {"key": "fire_rate", "label": "Fire rate",     "value": 25, "min": 0, "max": 100,  "step": 5, "regen": False, "suffix": "%"},
+    {"key": "fire_rate", "label": "Fire rate",     "value": 100, "min": 0, "max": 100,  "step": 5, "regen": False, "suffix": "%"},
 ]
 SETTINGS_BY_KEY = {entry["key"]: entry for entry in SETTINGS}
 setting_index = 0

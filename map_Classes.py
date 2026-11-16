@@ -78,11 +78,12 @@ resource_Burn = {
 }
 
 #chance a tile catches fire from one burning neighbor each spread tick
+#these are doubled and the fire rate is 100 because simulations showed the algorithms differ the most there
 terrain_Spread = {
 
-    Terrain.GRASS: 0.03,
+    Terrain.GRASS: 0.06,
     Terrain.WATER: 0,
-    Terrain.GRAVEL: 0.015,
+    Terrain.GRAVEL: 0.03,
     Terrain.ASH: 0,
 
 }
@@ -91,8 +92,8 @@ terrain_Spread = {
 resource_Spread = {
 
     Resource.Water: 0,
-    Resource.Tree: 0.03,
-    Resource.Bush: 0.02,
+    Resource.Tree: 0.06,
+    Resource.Bush: 0.04,
     Resource.Mountain: 0,
     Resource.Foam: 0,
     Resource.FireStation: 0,
