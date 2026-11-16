@@ -77,6 +77,34 @@ resource_Burn = {
 
 }
 
+#chance a tile catches fire from one burning neighbor each spread tick
+terrain_Spread = {
+
+    Terrain.GRASS: 0.03,
+    Terrain.WATER: 0,
+    Terrain.GRAVEL: 0.015,
+    Terrain.ASH: 0,
+
+}
+
+#added to the terrain chance when the object is on the tile
+resource_Spread = {
+
+    Resource.Water: 0,
+    Resource.Tree: 0.03,
+    Resource.Bush: 0.02,
+    Resource.Mountain: 0,
+    Resource.Foam: 0,
+
+}
+
+
+def spread_chance(tile):
+    chance = terrain_Spread[tile.terrain]
+    for thing in tile.occupant:
+        chance += resource_Spread[thing]
+    return chance
+
 
 def tile_value(tile):
     value = terrain_Values[tile.terrain]
@@ -102,6 +130,8 @@ def burn_time(tile):
 def can_burn(tile):
     #water and ash have nothing left to burn
     if tile.terrain == Terrain.WATER or tile.terrain == Terrain.ASH:
+        return False
+    if Resource.FireStation in tile.occupant:
         return False
     if tile.fireState or is_blocked(tile):
         return False
@@ -168,25 +198,22 @@ class Fire:
             self.ignite(random.choice(flammable_tiles))
 
     def spread(self, tile_Map):
-        possible_spreads = []
+        #tiles are lit after the loop so a new fire does not spread in the same tick
+        new_fires = []
 
         for tile in self.burning_tiles:
-            neighbors = []
             for row_offset, col_offset in ((-1, 0), (1, 0), (0, -1), (0, 1)):
                 neighbor_row = tile.row + row_offset
                 neighbor_col = tile.col + col_offset
 
                 if 0 <= neighbor_row < len(tile_Map) and 0 <= neighbor_col < len(tile_Map[neighbor_row]):
                     neighbor = tile_Map[neighbor_row][neighbor_col]
-                    if can_burn(neighbor):
-                        neighbors.append(neighbor)
+                    if can_burn(neighbor) and neighbor not in new_fires:
+                        if random.random() < spread_chance(neighbor):
+                            new_fires.append(neighbor)
 
-            if neighbors:
-                possible_spreads.append((tile, neighbors))
-
-        if possible_spreads:
-            source, neighbors = random.choice(possible_spreads)
-            self.ignite(random.choice(neighbors))
+        for tile in new_fires:
+            self.ignite(tile)
 
 
 class Drone:

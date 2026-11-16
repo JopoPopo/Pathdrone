@@ -9,6 +9,7 @@ from random_gen import noise
 
 DEPOT_SIZE = 4
 STATION_FOAM_CAPACITY = 20
+RESOURCE_SEED = 875
 CARDINAL_DIRECTIONS = ((-1, 0), (1, 0), (0, -1), (0, 1))
 DIAGONAL_DIRECTIONS = ((-1, -1), (-1, 1), (1, -1), (1, 1))
 FEATURE_SCALE = 6
@@ -37,7 +38,7 @@ def get_land(tile_Map):
     return land_Tiles
 
 
-def place_resources(tile_Map, count = DEPOT_SIZE):
+def place_resources(tile_Map, seed=None, count=DEPOT_SIZE):
     land_Tiles = get_land(tile_Map)
     if not land_Tiles:
         return []
@@ -58,13 +59,14 @@ def place_resources(tile_Map, count = DEPOT_SIZE):
 
         if (len(adjacent) == len(CARDINAL_DIRECTIONS)
                 and len(diagonals) == len(DIAGONAL_DIRECTIONS)
-                and all(tile.terrain != Terrain.WATER for tile in adjacent)):
+                and all(tile.terrain != Terrain.WATER for tile in adjacent + diagonals)):
             station_options.append((center, adjacent, diagonals))
 
     if not station_options:
         return []
 
-    center, depot_Tiles, drone_Tiles = random.choice(station_options)
+    chooser = random if seed is None else random.Random(seed)
+    center, depot_Tiles, drone_Tiles = chooser.choice(station_options)
     center.occupant.append(Resource.FireStation)
     center.foam_capacity = STATION_FOAM_CAPACITY
 
