@@ -128,6 +128,51 @@ def make_foam(size):
     return surface
 
 
+def make_fire_station(size):
+    surface = pygame.Surface((size, size), pygame.SRCALPHA)
+    inset = max(1, size // 8)
+    roof_peak = max(1, size // 6)
+    body_top = size // 3
+    half = size // 2
+
+    pygame.draw.rect(
+        surface,
+        (190, 45, 38),
+        (inset, body_top, size - 2 * inset, size - body_top - inset),
+    )
+    pygame.draw.polygon(
+        surface,
+        (115, 25, 25),
+        ((0, body_top), (half, roof_peak), (size, body_top)),
+    )
+    cross_width = max(2, size // 5)
+    cross_thickness = max(1, size // 12)
+    pygame.draw.rect(
+        surface,
+        (255, 245, 220),
+        (half - cross_thickness // 2, body_top - cross_width, cross_thickness, cross_width * 2),
+    )
+    pygame.draw.rect(
+        surface,
+        (255, 245, 220),
+        (half - cross_width, body_top - cross_thickness, cross_width * 2, cross_thickness),
+    )
+
+    garage_width = max(2, size // 2)
+    garage_height = max(2, size // 3)
+    pygame.draw.rect(
+        surface,
+        (65, 75, 85),
+        (half - garage_width // 2, size - inset - garage_height, garage_width, garage_height),
+    )
+    pygame.draw.rect(
+        surface,
+        (210, 210, 200),
+        (half - garage_width // 2, size - inset - garage_height, garage_width, max(1, size // 16)),
+    )
+    return surface
+
+
 def make_fire(size):
     surface = pygame.Surface((size, size), pygame.SRCALPHA)
     half = size // 2
@@ -164,6 +209,7 @@ def make_textures(size, tile_Colors):
         Resource.Bush: make_bush(size).convert_alpha(),
         Resource.Mountain: make_mountain(size).convert_alpha(),
         Resource.Foam: make_foam(size).convert_alpha(),
+        Resource.FireStation: make_fire_station(size).convert_alpha(),
     }
     fire_Texture = make_fire(size).convert_alpha()
     return tile_Textures, feature_Textures, fire_Texture
