@@ -12,9 +12,11 @@ from map_Classes import is_blocked
 from map_Classes import can_burn
 from map_Classes import foam_group
 from random_gen import noise_map
+from pathfinding import bfs_path
 from algorithms import ALGORITHMS
-from resources import place_resources, RESOURCE_SEED
+from resources import place_resources, RESOURCE_SEED, DEPOT_SIZE
 from resources import place_features
+from resources import collect_foam
 from textures import make_textures
 
 # Pick the starting algorithm with: python Map.py --algorithm priority
@@ -116,10 +118,7 @@ SETTINGS = [
     {"key": "seed",      "label": "Terrain seed",  "value": 8,  "min": 0, "max": 9999, "step": 1, "regen": True},
     {"key": "scale",     "label": "Terrain scale", "value": 8,  "min": 1, "max": 32,   "step": 1, "regen": True},
     {"key": "octaves",   "label": "Terrain detail","value": 3,  "min": 1, "max": 6,    "step": 1, "regen": True},
-    {"key": "resources", "label": "Resources",     "value": 3,  "min": 0, "max": 25,   "step": 1, "regen": True, "suffix": "%"},
     {"key": "tank",      "label": "Drone tank",    "value": 1,  "min": 1, "max": 10,   "step": 1, "regen": True},
-    {"key": "foam_tank", "label": "Foam tank",     "value": 1,  "min": 0, "max": 5,    "step": 1, "regen": True},
-    {"key": "drones",    "label": "Drones",        "value": 1,  "min": 1, "max": 6,    "step": 1, "regen": True},
     {"key": "fire_rate", "label": "Fire rate",     "value": 25, "min": 0, "max": 100,  "step": 5, "regen": False, "suffix": "%"},
 ]
 SETTINGS_BY_KEY = {entry["key"]: entry for entry in SETTINGS}
@@ -216,8 +215,8 @@ def brush_row_rects():
 
 
 def build_world():
-    """Create a fresh map, resources, fire and drone from the current settings."""
-    global tile_Map, resources, fire, drones, drone_paths, drone_modes, world_dirty, water_Tiles
+    """Create a fresh map, station, drones, and fire from the current settings."""
+    global tile_Map, resources, fire, drones, drone_paths, station_tile, world_dirty, water_Tiles
     global drone_move_timer, fire_spawn_timer, fire_spread_timer
 
     noise_Map = noise_map(MAP_COLS, MAP_ROWS, setting("seed"), setting("scale"), setting("octaves"))
@@ -226,28 +225,38 @@ def build_world():
          for col in range(MAP_COLS)]
         for row in range(MAP_ROWS)
     ]
-    # Offset the resource seed by the terrain seed so a new seed moves both.
     resources = place_resources(
         tile_Map,
         seed=RESOURCE_SEED + setting("seed"),
-        count=int(sum(tile.terrain != Terrain.WATER for row in tile_Map for tile in row)
-                  * setting("resources") / 100),
+        count=DEPOT_SIZE,
     )
     place_features(tile_Map)
     water_Tiles = [tile for row in tile_Map for tile in row if tile.terrain == Terrain.WATER]
-    fire = Fire()
-    fire.spawn_random_source(tile_Map)   # start with one fire so the drone has a target right away
-    open_tiles = [tile for row in tile_Map for tile in row if not tile.fireState and not is_blocked(tile)]
+    station_tile = next(
+        (tile for row in tile_Map for tile in row if Resource.FireStation in tile.occupant),
+        None,
+    )
+    drone_tiles = [
+        tile for row in tile_Map for tile in row
+        if Resource.DronePad in tile.occupant
+    ]
+    drones = [Drone(tile, max_water=setting("tank")) for tile in drone_tiles]
+    if not drones:
+        open_tiles = [
+            tile for row in tile_Map for tile in row
+            if not is_blocked(tile) and tile.terrain != Terrain.WATER
+        ]
+        if open_tiles:
+            drones = [Drone(random.choice(open_tiles), max_water=setting("tank"))]
 
-    #every drone starts on its own tile
-    spots = random.sample(open_tiles, min(setting("drones"), len(open_tiles))) or [tile_Map[0][0]]
-    drones = []
-    for spot in spots:
-        drones.append(Drone(spot, max_water=setting("tank"), max_foam=setting("foam_tank")))
+    fire = Fire()
+    fire.spawn_random_source(
+        tile_Map,
+        excluded={(drone.row, drone.col) for drone in drones},
+    )
     set_algorithm(algorithm_key)
 
-    drone_paths = [[] for item in drones]
-    drone_modes = ["fire" for item in drones]
+    drone_paths = [([], "fire") for drone in drones]
     drone_move_timer = 0
     fire_spawn_timer = 0
     fire_spread_timer = 0
@@ -286,15 +295,12 @@ def paint_tile(tile, index=None):
     elif kind == "erase":
         fire.extinguish(tile)
         clear_resource(tile)
-    elif kind == "drone" and not is_blocked(tile):
-        #move the drone that is closest to the click
-        closest = drones[0]
-        for item in drones:
-            if abs(item.row - tile.row) + abs(item.col - tile.col) < abs(closest.row - tile.row) + abs(closest.col - tile.col):
-                closest = item
-        closest.row, closest.col = tile.row, tile.col
+    elif kind == "drone" and drones and not is_blocked(tile):
+        drone = min(drones, key=lambda item: abs(item.row - tile.row) + abs(item.col - tile.col))
+        if all(item is drone or (item.row, item.col) != (tile.row, tile.col) for item in drones):
+            drone.row, drone.col = tile.row, tile.col
         set_algorithm(algorithm_key)
-    drone_paths = [[] for item in drones]
+    drone_paths = [([], "fire") for drone in drones]
 
 
 def tile_at(pos):
@@ -306,19 +312,19 @@ def tile_at(pos):
 
 
 def set_algorithm(key):
-    """Switch the drone's brain. The new algorithm starts with a clean slate."""
-    global algorithm_key, algorithm, algorithms
+    """Switch all drones to the selected algorithm with fresh planner state."""
+    global algorithm_key, algorithm, algorithms, drone_paths
     algorithm_key = key
 
-    #every drone has its own algorithm
-    #the team is shared by all of them, only the greedy ratio reads it, the other algorithms are untouched
+    #the team is shared by all the drones, only the greedy ratio reads it, the other algorithms are untouched
     team = {}
     algorithms = []
-    for item in drones:
+    for drone in drones:
         brain = ALGORITHMS[key](tile_Map, water_Tiles)
         brain.team = team
         algorithms.append(brain)
-    algorithm = algorithms[0]
+    algorithm = algorithms[0] if algorithms else ALGORITHMS[key](tile_Map, water_Tiles)
+    drone_paths = [([], "fire") for drone in drones]
 
 
 algorithm_key = args.algorithm
@@ -414,21 +420,24 @@ def put_out_fire(drone, tile):
         drone.foam -= 1
 
 
-def move_all_drones():
-    global drone_paths, drone_modes
-    for index, drone in enumerate(drones):
-        drone_paths[index], drone_modes[index] = move_drone(drone)
-
-
-def move_drone(drone):
+def move_drone(drone, brain, occupied_positions=()):
     """Take one step toward the current goal, then act on the tile reached.
 
     The path is recalculated every step, since fires spread and new ones
     appear. Returns the path still ahead and the mode, for drawing.
     """
-    path, mode = algorithms[drones.index(drone)].next_path(drone, fire.burning_tiles)
+    path, mode = brain.next_path(drone, fire.burning_tiles)
     if not path:
         return [], mode
+    if len(path) > 1 and tuple(path[1]) in occupied_positions:
+        path = bfs_path(
+            tile_Map,
+            (drone.row, drone.col),
+            [path[-1]],
+            blocked_positions=occupied_positions,
+        )
+        if not path:
+            return [], mode
     if len(path) > 1:
         drone.row, drone.col = path[1]
 
@@ -437,10 +446,20 @@ def move_drone(drone):
         put_out_fire(drone, tile)
     if tile.terrain == Terrain.WATER:
         drone.water = drone.max_water
-    if Resource.Foam in tile.occupant and drone.foam < drone.max_foam:
+    if collect_foam(tile, station_tile, drone) and Resource.Foam not in tile.occupant:
         clear_resource(tile)
-        drone.foam += 1
     return path[1:], mode
+
+
+def move_all_drones():
+    paths = []
+    for index, drone in enumerate(drones):
+        occupied = {
+            (other.row, other.col) for other in drones if other is not drone
+        }
+        brain = algorithms[index]
+        paths.append(move_drone(drone, brain, occupied))
+    return paths
 
 
 DRONE_MOVE_INTERVAL = 250   # ms per tile
@@ -645,7 +664,6 @@ def draw_algorithm_picker():
 
 def handle_algorithm_input(event):
     """Clicks on a button or function keys F1, F2, ... choose the algorithm."""
-    global drone_paths
     chosen = None
     if event.type == pygame.MOUSEBUTTONDOWN and event.button == 1:
         for key, rect in algorithm_buttons():
@@ -658,15 +676,6 @@ def handle_algorithm_input(event):
             chosen = keys[index]
     if chosen and chosen != algorithm_key:
         set_algorithm(chosen)
-        drone_paths = [[] for item in drones]
-
-
-def drone_status():
-    #D1 2w 1f means drone 1 has 2 water and 1 foam
-    words = []
-    for index, drone in enumerate(drones):
-        words.append(f"D{index + 1} {drone.water}w {drone.foam}f")
-    return "  ".join(words)
 
 
 def draw_status_bar():
@@ -676,10 +685,13 @@ def draw_status_bar():
 
     y = MAP_HEIGHT + 12
     state = "PAUSED" if paused else "RUNNING"
+    water = ", ".join(f"{item.water}/{item.max_water}" for item in drones) or "none"
+    carried = ", ".join(f"{item.foam}/{item.max_foam}" for item in drones) or "none"
+    foam_reserve = station_tile.foam_capacity if station_tile else 0
     status = (
-        f"{state}      drones {drone_status()}"
+        f"{state}      drones {len(drones)} water {water} foam {carried}"
         f"      fires {len(fire.burning_tiles)}"
-        f"      resources {len(resources)}"
+        f"      foam reserve {foam_reserve}"
         f"      brush: {BRUSHES[brush_index][0]}"
     )
     screen.blit(
@@ -694,7 +706,7 @@ def draw_status_bar():
 
 def handle_event(event):
     global paused, brush_index, setting_index, painting, paint_button
-    global world_dirty, options_open, brush_open
+    global drone_paths, world_dirty, options_open, brush_open
 
     if event.type == pygame.QUIT:
         pygame.quit()
@@ -764,7 +776,7 @@ def handle_event(event):
         elif event.key == pygame.K_SPACE:
             paused = not paused
         elif event.key == pygame.K_PERIOD and paused:
-            move_all_drones()
+            drone_paths = move_all_drones()
         elif pygame.K_1 <= event.key <= pygame.K_8:
             brush_index = event.key - pygame.K_1
             brush_open = False
@@ -811,18 +823,19 @@ while True:
     drone_move_timer += delta_time
     if drone_move_timer >= DRONE_MOVE_INTERVAL:
         drone_move_timer -= DRONE_MOVE_INTERVAL
-        move_all_drones()
+        drone_paths = move_all_drones()
 
     pygame.display.set_caption(
         f"Map Gen - {algorithm.name} - {'paused' if paused else 'running'}"
-        f" - drones {len(drones)}"
+        f" - drones {len(drones)} - station foam "
+        f"{station_tile.foam_capacity if station_tile else 0}"
     )
 
     for y, row in enumerate(tile_Map):
         for x, item in enumerate(row):
             draw_tile(y, x, item)
-    for index, drone in enumerate(drones):
-        draw_path(drone_paths[index], drone_modes[index])
+    for path, mode in drone_paths:
+        draw_path(path, mode)
     for drone in drones:
         draw_drone(drone)
     draw_hover_highlight()
