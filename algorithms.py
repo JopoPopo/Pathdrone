@@ -13,7 +13,7 @@ To add a new algorithm, write a class like the ones below and add it to
 ALGORITHMS at the bottom of this file.
 """
 
-from map_Classes import Terrain, can_burn, is_blocked, tile_value
+from map_Classes import Terrain, Resource, can_burn, is_blocked, tile_value, foam_group
 from pathfinding import bfs_path, distance_map, neighbors
 
 
@@ -191,8 +191,139 @@ class PriorityPlanner:
         return min(self.stations, key=total)
 
 
+# ---- Greedy ratio ----------------------------------------------------------
+
+#steps it takes to put a fire out, so the cost is never 0 even when the drone is on the fire
+EXTINGUISH_STEPS = 1
+
+
+class GreedyRatio:
+    #every step the drone scores its options and does the best one
+    #score = what we save / time it takes, benefit over cost
+    #benefit = the value of the tile + the value of the tiles it could spread to
+    #cost = steps to get there + steps to put it out
+    #foam puts out a group of tiles at once so its benefit is the whole group
+    #it never plans ahead, it only picks the best choice right now, that is what greedy means
+    #the team is shared by all the drones, each drone writes what it is going for there
+    #so the other drones leave those tiles alone
+
+    name = "Greedy ratio"
+
+    def __init__(self, tile_Map, water_Tiles):
+        self.tile_Map = tile_Map
+        self.stations = _positions(water_Tiles)
+
+        #Map.py gives all the drones the same team, alone it just has its own
+        self.team = {}
+
+    def next_path(self, drone, burning_tiles):
+        start = (drone.row, drone.col)
+        me = id(drone)
+        self.team[me] = set()
+
+        #what the other drones are already going for
+        taken = set()
+        for other in self.team:
+            if other != me:
+                taken = taken | self.team[other]
+
+        #one search from the drone gives the steps to every tile
+        from_drone = distance_map(self.tile_Map, [start])
+
+        #the closest foam we could go and get
+        dot = None
+        from_dot = {}
+        if drone.foam < drone.max_foam:
+            dot = self.closest_foam(from_drone, taken)
+        if dot is not None:
+            from_dot = distance_map(self.tile_Map, [dot])
+
+        best_score = -1
+        best_goal = None
+        best_mode = "fire"
+        best_claim = set()
+
+        for tile in burning_tiles:
+            spot = (tile.row, tile.col)
+            if spot in taken or spot not in from_drone:
+                continue
+
+            #the tiles one foam would put out, without the ones another drone has
+            group = []
+            for item in foam_group(self.tile_Map, tile):
+                if (item.row, item.col) not in taken:
+                    group.append(item)
+
+            water_benefit = self.benefit(tile)
+            foam_benefit = 0
+            group_spots = set()
+            for item in group:
+                foam_benefit += self.benefit(item)
+                group_spots.add((item.row, item.col))
+
+            #option 1, fight with what the drone carries
+            if drone.foam > 0 and len(group) > 1:
+                score = foam_benefit / (from_drone[spot] + EXTINGUISH_STEPS)
+                if score > best_score:
+                    best_score = score
+                    best_goal = spot
+                    best_mode = "fire"
+                    best_claim = group_spots
+            elif drone.water > 0:
+                score = water_benefit / (from_drone[spot] + EXTINGUISH_STEPS)
+                if score > best_score:
+                    best_score = score
+                    best_goal = spot
+                    best_mode = "fire"
+                    best_claim = {spot}
+
+            #option 2, go and get foam first, only worth it if the foam puts out a group
+            if dot is not None and len(group) > 1 and spot in from_dot:
+                trip = from_drone[dot] + from_dot[spot] + EXTINGUISH_STEPS
+                score = foam_benefit / trip
+                if score > best_score:
+                    best_score = score
+                    best_goal = dot
+                    best_mode = "foam"
+                    best_claim = group_spots | {dot}
+
+        if best_goal is None:
+            #nothing to fight with or nothing to fight, so fill the tank
+            if drone.water < drone.max_water:
+                return bfs_path(self.tile_Map, start, self.stations) or [], "refill"
+            return [], "fire"
+
+        self.team[me] = best_claim
+        return bfs_path(self.tile_Map, start, [best_goal]) or [], best_mode
+
+    def benefit(self, tile):
+        #the tile and the tiles next to it that can still burn
+        return tile_value(tile) + self.spread_value(tile)
+
+    def spread_value(self, tile):
+        #the value of the tiles next to this fire that can still burn
+        value = 0
+        for row, col in neighbors(self.tile_Map, tile.row, tile.col):
+            neighbor = self.tile_Map[row][col]
+            if can_burn(neighbor):
+                value += tile_value(neighbor)
+        return value
+
+    def closest_foam(self, from_drone, taken):
+        #the foam the drone can reach in the fewest steps, that no other drone is going for
+        closest = None
+        for row in self.tile_Map:
+            for item in row:
+                spot = (item.row, item.col)
+                if Resource.Foam in item.occupant and spot not in taken and spot in from_drone:
+                    if closest is None or from_drone[spot] < from_drone[closest]:
+                        closest = spot
+        return closest
+
+
 # Name shown in the game -> class. Order here is the order of the buttons.
 ALGORITHMS = {
     "nearest": NearestFirst,
     "priority": PriorityPlanner,
+    "ratio": GreedyRatio,
 }

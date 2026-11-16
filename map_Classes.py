@@ -205,6 +205,23 @@ class Fire:
             self.ignite(tile)
 
 
+#how many tiles one foam puts out at once, the tile and the burning tiles next to it
+FOAM_TILES = 3
+
+
+def foam_group(tile_Map, tile):
+    group = [tile]
+    for row_offset, col_offset in ((-1, 0), (1, 0), (0, -1), (0, 1)):
+        neighbor_row = tile.row + row_offset
+        neighbor_col = tile.col + col_offset
+
+        if 0 <= neighbor_row < len(tile_Map) and 0 <= neighbor_col < len(tile_Map[neighbor_row]):
+            neighbor = tile_Map[neighbor_row][neighbor_col]
+            if neighbor.fireState and len(group) < FOAM_TILES:
+                group.append(neighbor)
+    return group
+
+
 class Drone:
 
     def __init__(self, tile, max_water=1, max_foam=1):
