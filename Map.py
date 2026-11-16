@@ -18,6 +18,7 @@ from resources import place_resources, RESOURCE_SEED, DEPOT_SIZE
 from resources import place_features
 from resources import collect_foam
 from textures import make_textures
+from startup_screen import run_startup_screen
 
 # Pick the starting algorithm with: python Map.py --algorithm priority
 # You can also switch while it runs: click a button in the panel, or press F1 / F2.
@@ -70,6 +71,10 @@ WINDOW_HEIGHT = MAP_HEIGHT + STATUS_HEIGHT
 screen = pygame.display.set_mode((WINDOW_WIDTH, WINDOW_HEIGHT))
 pygame.display.set_caption('Map Gen')
 clock = pygame.time.Clock()
+if not run_startup_screen(screen, clock):
+    pygame.quit()
+    exit()
+
 legend_title_font = pygame.font.SysFont("Arial", 24, bold=True)
 legend_head_font = pygame.font.SysFont("Arial", 14, bold=True)
 legend_item_font = pygame.font.SysFont("Arial", 16)
