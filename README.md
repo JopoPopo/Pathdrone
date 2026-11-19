@@ -22,3 +22,6 @@ settings, `G` to rebuild, `SPACE` to pause/resume, or `.` to step while paused.
 
 Algorithms live in `algorithms.py`. To add one, write a class with a
 `next_path(drone, burning_tiles)` method and add it to `ALGORITHMS`.
+
+## AI Use
+AI tools were used in certain parts of the development process. Suggestions were reviewed and tested manually before being incorporated.
